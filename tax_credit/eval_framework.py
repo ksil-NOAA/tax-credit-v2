@@ -11,18 +11,34 @@
 
 from sys import exit
 from glob import glob
-from os.path import abspath, join, exists, split, dirname
+from os.path import abspath, join, exists, dirname
 from collections import defaultdict
 from functools import partial
-from random import shuffle
-from shutil import copy
-
 from biom.exception import TableException
 from biom import load_table
 from biom.cli.util import write_biom_table
 import pandas as pd
 
 from tax_credit import framework_functions, taxa_manipulator
+from tax_credit.paths import (
+    DEFAULT_EXPECTED_TABLE_PATTERN,
+    DEFAULT_MOCK_RESULT_TABLE_PATTERN,
+    FEATURE_TABLE_BIOM,
+    MERGED_TABLE_BIOM,
+    REP_SEQS_TAX_ASSIGNMENTS_TXT,
+    TAXONOMY_TSV,
+    TRUEISH_TAXONOMIES_TSV,
+    expected_tables_glob,
+    mock_observed_tables_glob,
+    parse_expected_table_path,
+    parse_mock_result_table_path,
+)
+
+
+def _mean_absolute_deviation(series):
+    """Mean absolute deviation from the mean (replaces removed ``Series.mad()``)."""
+    s = pd.to_numeric(series, errors="coerce")
+    return (s - s.mean()).abs().mean()
 
 
 def get_sample_to_top_params(df, metric, sample_col='SampleID',
@@ -57,7 +73,7 @@ def get_sample_to_top_params(df, metric, sample_col='SampleID',
             current_results = {}
             for method in sorted_df.Method.unique():
                 m_res = dataset_sid_res[dataset_sid_res.Method == method]
-                mad_metric_value = m_res[metric].mad()
+                mad_metric_value = _mean_absolute_deviation(m_res[metric])
                 # if higher values are better, find params within MAD of max
                 if ascending is False:
                     max_val = m_res[metric].max()
@@ -119,7 +135,7 @@ def parameter_comparisons(
 
 def find_and_process_result_tables(start_dir,
                                    biom_processor=abspath,
-                                   filename_pattern='table*biom'):
+                                   filename_pattern=DEFAULT_MOCK_RESULT_TABLE_PATTERN):
     """ given a start_dir, return list of tuples describing the table and
     containing the processed table
 
@@ -137,21 +153,17 @@ def find_and_process_result_tables(start_dir,
                   ]
     """
     results = []
-    table_fps = glob(join(start_dir, '*', '*', '*', '*', filename_pattern))
+    table_fps = glob(mock_observed_tables_glob(start_dir, filename_pattern))
     for table_fp in table_fps:
-        param_dir, _ = split(table_fp)
-        method_dir, param_id = split(param_dir)
-        reference_dir, method_id = split(method_dir)
-        dataset_dir, reference_id = split(reference_dir)
-        _, dataset_id = split(dataset_dir)
-        results.append((dataset_id, reference_id, method_id, param_id,
-                        biom_processor(table_fp)))
+        parts = parse_mock_result_table_path(table_fp)
+        results.append((parts.dataset_id, parts.reference_id, parts.method_id,
+                        parts.parameter_id, biom_processor(table_fp)))
     return results
 
 
 def find_and_process_expected_tables(start_dir,
                                      biom_processor=abspath,
-                                     filename_pattern='table.L{0}-taxa.biom',
+                                     filename_pattern=DEFAULT_EXPECTED_TABLE_PATTERN,
                                      level=6):
     """ given a start_dir, return list of tuples describing the table and
     containing the processed table
@@ -170,20 +182,18 @@ def find_and_process_expected_tables(start_dir,
                   ]
     """
     filename = filename_pattern.format(level)
-    table_fps = glob(join(start_dir, '*', '*', 'expected', filename))
+    table_fps = glob(expected_tables_glob(start_dir, filename))
     results = []
     for table_fp in table_fps:
-        expected_dir, _ = split(table_fp)
-        reference_dir, _ = split(expected_dir)
-        dataset_dir, reference_id = split(reference_dir)
-        _, dataset_id = split(dataset_dir)
-        results.append((dataset_id, reference_id, biom_processor(table_fp)))
+        exp_parts = parse_expected_table_path(table_fp)
+        results.append((exp_parts.dataset_id, exp_parts.reference_id,
+                        biom_processor(table_fp)))
     return results
 
 
 def get_expected_tables_lookup(start_dir,
                                biom_processor=abspath,
-                               filename_pattern='table.L{0}-taxa.biom',
+                               filename_pattern=DEFAULT_EXPECTED_TABLE_PATTERN,
                                level=6):
     """ given a start_dir, return list of tuples describing the expected table
     and containing the processed table
@@ -343,189 +353,6 @@ def seek_results(results_dirs, dataset_ids=None, reference_ids=None,
     return results
 
 
-def evaluate_results(results_dirs, expected_results_dir, results_fp, mock_dir,
-                     taxonomy_level_range=range(2, 7), min_count=0,
-                     taxa_to_keep=None, md_key='taxonomy',
-                     dataset_ids=None, reference_ids=None,
-                     method_ids=None, parameter_ids=None, subsample=False,
-                     filename_pattern='table.L{0}-taxa.biom', size=10,
-                     per_seq_precision=False, exclude=['other'], backup=True,
-                     force=False, append=False):
-    '''Load observed and expected observations from tax-credit, compute
-        precision, recall, F-measure, and correlations, and return results
-        as dataframe.
-
-        results_dirs: list of directories containing precomputed taxonomy
-            assignment results to evaluate. Must be in format:
-                results_dirs/<dataset name>/
-                    <reference name>/<method>/<parameters>/
-        expected_results_dir: directory containing expected composition data in
-            the structure:
-            expected_results_dir/<dataset name>/<reference name>/expected/
-        results_fp: path to output file containing evaluation results summary.
-        mock_dir: path
-            Directory of mock community directiories containing mock feature
-            tables without taxonomy.
-        taxonomy_level_range: RANGE of taxonomic levels to evaluate.
-        min_count: int
-            Minimum abundance threshold for filtering taxonomic features.
-        taxa_to_keep: list of taxonomies to retain, others are removed before
-            evaluation.
-        md_key: metadata key containing taxonomy metadata in observed taxonomy
-            biom tables.
-        dataset_ids: list
-            dataset ids (mock community study ID) to process. Defaults to None
-            (process all).
-        reference_ids: list
-            reference database data to process. Defaults to None (process all).
-        method_ids: list
-            methods to process. Defaults to None (process all).
-        parameter_ids: list
-            parameters to process. Defaults to None (process all).
-        subsample: bool
-            Randomly subsample results for test runs.
-        size: int
-            Size of subsample to take.
-        exclude: list
-            taxonomies to explicitly exclude from precision scoring.
-        backup: bool
-            Backup pre-existing results before overwriting? Will overwrite
-            previous backups, and will only backup if force or append ==True.
-        force: bool
-            Overwrite pre-existing results_fp?
-        append: bool
-            Append new data to results_fp? Behavior of force and append will
-            depend on whether the data in results_dirs have already been
-            calculated in results_fp, and have interacting effects:
-
-            if force=   append= Action
-                True	True	Append new to results_fp; pre-existing results
-                                are overwritten if they are requested by the
-                                "results params": dataset_ids, reference_ids,
-                                method_ids, parameter_ids. If these should be
-                                excluded and results_fp should only include
-                                results specifically requested, use force==True
-                                and append==False.
-                True	False	Overwrite results_fp with results requested by
-                                "results params".
-                False	True	Load results_fp and append new to results_fp;
-                                pre-existing results are not overwritten even
-                                if requested by "results params".
-                False	False	Load results_fp. If "results params" are set,
-                                the dataframe returned by this function is
-                                automatically filtered to include only those
-                                results.
-
-    '''
-    # Define the subdirectories where the query mock community data should be
-    results = seek_results(
-        results_dirs, dataset_ids, reference_ids, method_ids, parameter_ids)
-
-    if subsample is True:
-        shuffle(results)
-        results = results[:size]
-
-    # Process tables of expected taxonomy composition
-    expected_tables = get_expected_tables_lookup(
-        expected_results_dir, filename_pattern=filename_pattern)
-
-    # Compute accuracy results OR read in pre-existing mock_results_fp
-    if not exists(results_fp) or force:
-        # if append is True, load pre-existing results prior to overwriting
-        if exists(results_fp) and append and (
-                dataset_ids or reference_ids or method_ids or parameter_ids):
-            old_results = pd.DataFrame.from_csv(results_fp, sep='\t')
-            # overwrite results that are explicitly requested by results params
-            old_results = _filter_mock_results(
-                old_results, dataset_ids, reference_ids, method_ids,
-                parameter_ids)
-        # compute accuracy results
-        mock_results = compute_mock_results(
-            results, expected_tables, results_fp, mock_dir,
-            taxonomy_level_range, min_count=min_count,
-            taxa_to_keep=taxa_to_keep, md_key=md_key,
-            per_seq_precision=per_seq_precision, exclude=exclude)
-        # if append is True, add new results to old
-        if exists(results_fp) and append and (
-                dataset_ids or reference_ids or method_ids or parameter_ids):
-            mock_results = pd.concat([mock_results, old_results])
-        # write
-        _write_mock_results(mock_results, results_fp, backup)
-
-    # if force is False, load precomputed results and append/filter as required
-    else:
-        print("{0} already exists.".format(results_fp))
-        print("Reading in pre-computed evaluation results.")
-        print("To overwrite, set force=True")
-        mock_results = pd.DataFrame.from_csv(results_fp, sep='\t')
-
-        # if append is True, add results explicitly requested in results params
-        # if those data are absent from mock_results.
-        if append:
-            # remove results (to compute) if they already exist in mock_results
-            # *** one potential bug with my approach here is that this does not
-            # *** check whether results have been computed at all taxonomic
-            # *** levels, on all samples, etc. Hence, if results are missing
-            # *** for any reason but are present at other levels or samples in
-            # *** that mock community, they will be skipped. This is probably
-            # *** a negligible problem right now — users should make sure they
-            # *** know they are being consistent and can always overwrite if
-            # *** something has gone wrong and need to bypass this behavior.
-            results = [r for r in results if not
-                       ((mock_results['Dataset'] == r[0]) &
-                        (mock_results['Reference'] == r[1]) &
-                        (mock_results['Method'] == r[2]) &
-                        (mock_results['Parameters'] == r[3])).any()]
-            print("append==True and force==False")
-            print(len(results), "new results have been appended to results.")
-            # merge any new results with pre-computed results, write out
-            if len(results) >= 1:
-                new_mock_results = compute_mock_results(
-                    results, expected_tables, results_fp, mock_dir,
-                    taxonomy_level_range, min_count=min_count,
-                    taxa_to_keep=taxa_to_keep, md_key=md_key,
-                    per_seq_precision=per_seq_precision, exclude=exclude)
-                mock_results = pd.concat([mock_results, new_mock_results])
-                # write. note we only do this if we actually append results!
-                _write_mock_results(mock_results, results_fp, backup)
-
-        # if append is false and results params are set, filter loaded data
-        elif dataset_ids or reference_ids or method_ids or parameter_ids:
-            print("Results have been filtered to only include datasets or "
-                  "reference databases or methods or parameters that are "
-                  "explicitly set by results params. To disable this "
-                  "function and load all results, set dataset_ids and "
-                  "reference_ids and method_ids and parameter_ids to None.")
-            mock_results = _filter_mock_results(
-                mock_results, dataset_ids, reference_ids, method_ids,
-                parameter_ids)
-
-    return mock_results
-
-
-def _write_mock_results(mock_results, results_fp, backup=True):
-    if backup:
-        copy(results_fp, ''.join([results_fp, '.bk']))
-    mock_results.to_csv(results_fp, sep='\t')
-
-
-def _filter_mock_results(mock_results, dataset_ids, reference_ids, method_ids,
-                         parameter_ids):
-    '''Filter mock results dataframe on dataset_ids, reference_ids, method_ids,
-    and parameter_ids'''
-    if dataset_ids:
-        mock_results = filter_df(mock_results, 'Dataset', dataset_ids)
-    if reference_ids:
-        mock_results = filter_df(
-            mock_results, 'Reference', reference_ids)
-    if method_ids:
-        mock_results = filter_df(mock_results, 'Method', method_ids)
-    if parameter_ids:
-        mock_results = filter_df(
-            mock_results, 'Parameters', parameter_ids)
-    return mock_results
-
-
 def filter_df(df_in, column_name=None, values=None, exclude=False):
     '''Filter pandas df to contain only rows with column_name values that are
     listed in values.
@@ -609,101 +436,6 @@ def mount_observations(table_fp, min_count=0, taxonomy_level=6,
     return table
 
 
-def compute_mock_results(result_tables, expected_table_lookup, results_fp,
-                         mock_dir, taxonomy_level_range=range(2, 7),
-                         min_count=0,
-                         taxa_to_keep=None, md_key='taxonomy',
-                         per_seq_precision=False, exclude=None):
-    """ Compute precision, recall, and f-measure for result_tables at
-    taxonomy_level
-
-        result_tables: 2d list of tables to be compared to expected tables,
-         where the data in the inner list is:
-          [dataset_id, reference_database_id, method_id,
-           parameter_combination_id, table_fp]
-        expected_table_lookup: 2d dict of dataset_id, reference_db_id to BIOM
-         table filepath, for the expected result tables
-        taxonomy_level_range: range of levels to compute results
-        results_fp: path to output file containing evaluation results summary
-        mock_dir: path
-            Directory of mock community directories that contain feature tables
-            without taxonomy.
-        per_seq_precision: bool
-            Compute per-sequence precision/recall scores from expected
-            taxonomy assignments?
-        exclude: list
-            taxonomies to explicitly exclude from precision scoring.
-    """
-
-    results = []
-    for dataset_id, ref_id, method, params, actual_table_fp in result_tables:
-
-        # Find expected results
-        try:
-            expected_table_fp = expected_table_lookup[dataset_id][ref_id]
-        except KeyError:
-            raise KeyError("Can't find expected table for \
-                            ({0}, {1}).".format(dataset_id, ref_id))
-
-        for taxonomy_level in taxonomy_level_range:
-            # parse the expected table (unless taxonomy_level is specified,
-            # this should be collapsed on level 6 taxonomy)
-            expected_table = mount_observations(expected_table_fp,
-                                                min_count=0,
-                                                taxonomy_level=taxonomy_level,
-                                                taxa_to_keep=taxa_to_keep,
-                                                filter_obs=False)
-
-            # parse the actual table and collapse it at the specified
-            # taxonomic level
-            actual_table = mount_observations(actual_table_fp,
-                                              min_count=min_count,
-                                              taxonomy_level=taxonomy_level,
-                                              taxa_to_keep=taxa_to_keep,
-                                              md_key=md_key)
-
-            # load the feature table without taxonomy assignment
-            # we use this for per-sequence precision
-            feature_table_fp = join(mock_dir, dataset_id, 'feature_table.biom')
-            try:
-                feature_table = load_table(feature_table_fp)
-            except ValueError:
-                raise ValueError(
-                    "Couldn't parse BIOM table: {0}".format(feature_table_fp))
-
-            for sample_id in actual_table.ids(axis="sample"):
-                # compute precision, recall, and f-measure
-                try:
-                    accuracy, detection = compute_taxon_accuracy(
-                        actual_table, expected_table,
-                        actual_sample_id=sample_id,
-                        expected_sample_id=sample_id)
-                except ZeroDivisionError:
-                    accuracy, detection = -1., -1., -1.
-
-                # compute per-sequence precion / recall
-                if per_seq_precision and exists(join(
-                        dirname(expected_table_fp), 'trueish-taxonomies.tsv')):
-                    p, r, f = per_sequence_precision(
-                        expected_table_fp, actual_table_fp, feature_table,
-                        sample_id, taxonomy_level, exclude=exclude)
-                else:
-                    p, r, f = -1., -1., -1.
-
-                # log results
-                results.append((dataset_id, taxonomy_level, sample_id,
-                                ref_id, method, params, p, r, f, accuracy,
-                                detection))
-
-    result = pd.DataFrame(results, columns=["Dataset", "Level", "SampleID",
-                                            "Reference", "Method",
-                                            "Parameters", "Precision",
-                                            "Recall", "F-measure",
-                                            "Taxon Accuracy Rate",
-                                            "Taxon Detection Rate"])
-    return result
-
-
 def _multiple_match_kludge(exp, obs, fill_empty_observations=True):
     '''Sort expected and observed lists and kludge to deal with cases where we
     were unable to unambiguously select an expected taxonomy'''
@@ -748,13 +480,13 @@ def per_sequence_precision(expected_table_fp, actual_table_fp, feature_table,
     community.
     '''
     # locate expected and observed taxonomies
-    exp_fp = join(dirname(expected_table_fp), 'trueish-taxonomies.tsv')
+    exp_fp = join(dirname(expected_table_fp), TRUEISH_TAXONOMIES_TSV)
     if exists(exp_fp):
         obs_dir = dirname(actual_table_fp)
-        if exists(join(obs_dir, 'rep_seqs_tax_assignments.txt')):
-            obs_fp = join(obs_dir, 'rep_seqs_tax_assignments.txt')
-        elif exists(join(obs_dir, 'taxonomy.tsv')):
-            obs_fp = join(obs_dir, 'taxonomy.tsv')
+        if exists(join(obs_dir, REP_SEQS_TAX_ASSIGNMENTS_TXT)):
+            obs_fp = join(obs_dir, REP_SEQS_TAX_ASSIGNMENTS_TXT)
+        elif exists(join(obs_dir, TAXONOMY_TSV)):
+            obs_fp = join(obs_dir, TAXONOMY_TSV)
         else:
             raise RuntimeError('taxonomy assignments do not exist '
                                'for dataset {0}'.format(obs_dir))
@@ -822,8 +554,8 @@ def add_sample_metadata_to_table(table_fp, dataset_id, reference_id,
 def merge_expected_and_observed_tables(expected_results_dir, results_dirs,
                                        md_key='taxonomy', min_count=0,
                                        taxonomy_level=6, taxa_to_keep=None,
-                                       biom_fp='merged_table.biom',
-                                       filename_pattern='table.L{0}-taxa.biom',
+                                       biom_fp=MERGED_TABLE_BIOM,
+                                       filename_pattern=DEFAULT_EXPECTED_TABLE_PATTERN,
                                        dataset_ids=None, reference_ids=None,
                                        method_ids=None, parameter_ids=None,
                                        force=False):
@@ -930,7 +662,7 @@ def method_by_dataset(df, dataset, sort_field, display_fields,
     sorted_dataset_df = dataset_df.sort_values(by=sort_field, ascending=False)
     filtered_dataset_df = sorted_dataset_df[_is_first(sorted_dataset_df,
                                                       test_field)]
-    return filtered_dataset_df.ix[:, display_fields]
+    return filtered_dataset_df.loc[:, display_fields]
 
 
 method_by_dataset_a1 = partial(method_by_dataset,
@@ -983,3 +715,6 @@ def method_by_reference_comparison(df, group_by='Reference', dataset='Dataset',
                                       display_fields=display_fields)
                 rank = pd.concat([rank, a])
     return rank
+
+
+from tax_credit.mock_evaluation import compute_mock_results, evaluate_results

@@ -9,7 +9,7 @@
 # The full license is in the file COPYING.txt, distributed with this software.
 # ----------------------------------------------------------------------------
 
-from os.path import join, exists, split, sep, expandvars, basename, splitext
+from os.path import join, exists, split, expandvars, basename, splitext
 from os import makedirs, remove, system, stat
 from glob import glob
 from itertools import product
@@ -26,7 +26,7 @@ from biom.parse import MetadataMap
 from numpy import random
 from skbio import io
 import pandas as pd
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import KFold, StratifiedKFold
 
 from tax_credit.taxa_manipulator import (accept_list_or_file,
                                          import_to_list,
@@ -39,6 +39,27 @@ from tax_credit.taxa_manipulator import (accept_list_or_file,
 from qiime2 import Artifact
 from qiime2.plugins import feature_classifier
 from q2_types.feature_data import DNAIterator
+
+from tax_credit.paths import (
+    QUERY_FASTA,
+    QUERY_TAXA_TSV,
+    REF_SEQS_FASTA,
+    REF_TAXA_TSV,
+    parse_result_leaf_dir_to_parts,
+    parse_taxonomy_map_path_to_dataset_id,
+)
+from tax_credit.simulation_names import (
+    GLOB_CV_FOLD_DIRS,
+    GLOB_NOVEL_FOLD_DIRS,
+    cross_validated_root,
+    cross_validated_trad_root,
+    format_cv_fold_dirname,
+    format_novel_fold_dirname,
+    novel_taxa_simulations_root,
+    parse_cv_dataset_id,
+    parse_novel_dataset_id,
+    ref_dbs_root,
+)
 
 
 def gen_param_sweep(data_dir, results_dir, reference_dbs,
@@ -111,7 +132,7 @@ def generate_per_method_biom_tables(taxonomy_glob, data_dir,
     '''Create biom tables from glob of taxonomy assignment results'''
     taxonomy_map_fps = glob(expandvars(taxonomy_glob))
     for taxonomy_map_fp in taxonomy_map_fps:
-        dataset_id = taxonomy_map_fp.split(sep)[-5]
+        dataset_id = parse_taxonomy_map_path_to_dataset_id(taxonomy_map_fp)
         biom_input_fp = join(data_dir, dataset_id, biom_input_fn)
         output_dir = split(taxonomy_map_fp)[0]
         biom_output_fp = join(output_dir, biom_output_fn)
@@ -124,8 +145,8 @@ def generate_per_method_biom_tables(taxonomy_glob, data_dir,
 def move_results_to_repository(method_dirs, precomputed_results_dir):
     '''Move new taxonomy assignment results to git repository'''
     for method_dir in method_dirs:
-        f = method_dir.split(sep)
-        dataset_id, db_id, method_id, param_id = f[-4], f[-3], f[-2], f[-1]
+        leaf = parse_result_leaf_dir_to_parts(method_dir)
+        dataset_id, db_id, method_id, param_id = leaf
 
         new_location = join(precomputed_results_dir, dataset_id, db_id,
                             method_id, param_id)
@@ -244,8 +265,8 @@ def distance_comparison(dataframe, data_dir, test_name, samples=10000):
         lengths = Counter()
         inner = []
         outer = []
-        trainsets = glob(join(simulated_dir, index+'*', 'ref_seqs.fasta'))
-        testsets = glob(join(simulated_dir, index+'*', 'query.fasta'))
+        trainsets = glob(join(simulated_dir, index+'*', REF_SEQS_FASTA))
+        testsets = glob(join(simulated_dir, index+'*', QUERY_FASTA))
         for train_fp, test_fp in zip(trainsets, testsets):
             train = list(map(str, io.read(train_fp, format='fasta')))
             test = list(map(str, io.read(test_fp, format='fasta')))
@@ -267,22 +288,111 @@ def distance_comparison(dataframe, data_dir, test_name, samples=10000):
         plt.show()
 
 
-def generate_simulated_datasets(dataframe, data_dir, read_length, iterations,
+def _simulated_reads_min_length_tag(min_read_length):
+    '''Filename fragment so simulated-read caches differ when min-length
+    filtering changes. Default 80 matches historical filenames (empty tag).
+    '''
+    if min_read_length is None:
+        return '_nominlen'
+    if min_read_length == 80:
+        return ''
+    return '_min{0}'.format(min_read_length)
+
+
+def simulated_reads_filepath(clean_fasta, fwd_primer_id, rev_primer_id,
+                             min_read_length=80, trim_primers=True,
+                             truncate=True):
+    '''Path to the simulated-reads FASTA that ``generate_simulated_datasets``
+    writes for the same arguments (excluding ``read_length``, which is not
+    part of the filename).
+
+    clean_fasta : str
+        Full path to the ``*_clean.fasta`` file for this reference (as produced
+        under ``ref_dbs_root``).
+    '''
+    base, ext = splitext(clean_fasta)
+    minlen_tag = _simulated_reads_min_length_tag(min_read_length)
+    if trim_primers:
+        primer_pair = '{0}-{1}'.format(fwd_primer_id, rev_primer_id)
+        if truncate:
+            return join('{0}_{1}_trunc{2}{3}'.format(
+                base, primer_pair, minlen_tag, ext))
+        return join('{0}_{1}_notrunc{2}{3}'.format(
+            base, primer_pair, minlen_tag, ext))
+    if truncate:
+        return join('{0}_noprimer_trunc{1}{2}'.format(
+            base, minlen_tag, ext))
+    return join('{0}_noprimer_full{1}{2}'.format(base, minlen_tag, ext))
+
+
+def generate_simulated_datasets(dataframe, data_dir, iterations,
+                                read_length=None,
                                 levelrange=range(6, 0, -1), force=False,
-                                min_read_length=80):
+                                min_read_length=80, trim_primers=True,
+                                truncate=True,
+                                simulation_method='cross-validated'):
     '''From a dataframe of sequence reference databases, build training/test
     sets of "novel taxa" queries, taxonomies, and reference seqs/taxonomies.
 
-    dataframe: pandas.DataFrame
+    Parameters
+    ----------
+    dataframe : pandas.DataFrame
+        Rows define reference DB paths, taxonomy paths, and primer metadata.
+    iterations : int
+        Number of cross-validation folds (must be >= 2).
+    read_length : int or None, optional
+        When ``truncate`` is True, maximum length of each simulated read:
+        passed as ``trunc_len`` to ``extract_reads`` (with primers) or used to
+        slice from the 5' end (without primers). Required if ``truncate`` is
+        True; omit or set to None when ``truncate`` is False.
+    min_read_length : int or None, optional
+        Sequences shorter than this (after extraction or 5' truncation) are
+        dropped. Default ``80``. If ``None``, no minimum-length filter is
+        applied. Non-default values add a ``_min<N>`` or ``_nominlen`` suffix
+        to the simulated-reads filename so results do not overwrite the
+        default cache.
+    trim_primers : bool, optional
+        If True (default), extract in-silico amplicons with
+        ``feature_classifier.methods.extract_reads`` using the forward and
+        reverse primer sequences. If False, take each cleaned reference
+        sequence from the 5' end up to ``read_length`` (no primer matching).
+        Output filenames differ between the two modes so cached files do not
+        collide.
+    truncate : bool, optional
+        If True (default), cap read length at ``read_length``. If False, keep
+        the full in-silico amplicon (with primers) or the full cleaned
+        reference sequence (without primers). With primers, ``trunc_len=0``
+        is passed to ``extract_reads`` (QIIME 2: no truncation). Simulated-read
+        filenames use ``_trunc``, ``_notrunc``, ``_noprimer_trunc``, or
+        ``_noprimer_full`` (plus optional min-length tags); they never embed
+        ``read_length``.
+    simulation_method : str, optional
+        ``cross-validated`` (default): stratified folds by taxonomic strata;
+        expected taxonomies may be trimmed so each query prefix appears in the
+        training set. ``cross-validated-trad``: random ``KFold`` splits on
+        sequence IDs; query taxonomies are left unchanged; test sequences are
+        removed from the reference. Novel-taxa simulation folders are only
+        produced for ``cross-validated``.
     '''
+    if simulation_method not in ('cross-validated', 'cross-validated-trad'):
+        raise ValueError(
+            'simulation_method must be "cross-validated" or '
+            '"cross-validated-trad"; got {!r}'.format(simulation_method))
     if iterations < 2:
         raise ValueError('Must perform two or more iterations for '
                          'construction of cross-validated datasets.')
+    if truncate and read_length is None:
+        raise ValueError(
+            'read_length is required when truncate=True; use truncate=False '
+            'if you do not need a truncation length.')
 
-    cv_dir = join(data_dir, 'cross-validated')
-    novel_dir = join(data_dir, 'novel-taxa-simulations')
+    if simulation_method == 'cross-validated-trad':
+        cv_dir = cross_validated_trad_root(data_dir)
+    else:
+        cv_dir = cross_validated_root(data_dir)
+    novel_dir = novel_taxa_simulations_root(data_dir)
     for index, data in dataframe.iterrows():
-        db_dir = join(data_dir, 'ref_dbs', data['Reference id'])
+        db_dir = join(ref_dbs_root(data_dir), data['Reference id'])
         if not exists(db_dir):
             makedirs(db_dir)
 
@@ -295,23 +405,30 @@ def generate_simulated_datasets(dataframe, data_dir, read_length, iterations,
             clean_taxa, clean_fasta = clean_database(
               data['Reference tax path'], data['Reference file path'], db_dir)
 
-        # Extract amplicons and filter by minimum length
-        primer_pair = '{0}-{1}'.format(data['Fwd primer id'],
-                                       data['Rev primer id'])
-        base, ext = splitext(clean_fasta)
-        simulated_reads_fp = join('{0}_{1}_trim{2}{3}'.format(
-            base, primer_pair, read_length, ext))
+        simulated_reads_fp = simulated_reads_filepath(
+            clean_fasta, data['Fwd primer id'], data['Rev primer id'],
+            min_read_length=min_read_length, trim_primers=trim_primers,
+            truncate=truncate)
         if not exists(simulated_reads_fp) or force:
-            # Trim reference sequences to amplicon target
-            seqs = Artifact.import_data('FeatureData[Sequence]', clean_fasta)
-            trimmed = feature_classifier.methods.extract_reads(
-                sequences=seqs, trunc_len=read_length,
-                f_primer=data['Fwd primer'], r_primer=data['Rev primer']).reads
-
             with open(simulated_reads_fp, 'w') as simulated_reads:
-                for seq in trimmed.view(DNAIterator):
-                    if len(seq) >= min_read_length:
-                        seq.write(simulated_reads, format='fasta')
+                if trim_primers:
+                    seqs = Artifact.import_data(
+                        'FeatureData[Sequence]', clean_fasta)
+                    trunc_len = read_length if truncate else 0
+                    trimmed = feature_classifier.methods.extract_reads(
+                        sequences=seqs, trunc_len=trunc_len,
+                        f_primer=data['Fwd primer'],
+                        r_primer=data['Rev primer']).reads
+                    for seq in trimmed.view(DNAIterator):
+                        if (min_read_length is None
+                                or len(seq) >= min_read_length):
+                            seq.write(simulated_reads, format='fasta')
+                else:
+                    for seq in io.read(clean_fasta, format='fasta'):
+                        out_seq = seq[:read_length] if truncate else seq
+                        if (min_read_length is None
+                                or len(out_seq) >= min_read_length):
+                            out_seq.write(simulated_reads, format='fasta')
         else:
             print('simulated reads and amplicons exist: skipping extraction')
 
@@ -322,11 +439,17 @@ def generate_simulated_datasets(dataframe, data_dir, read_length, iterations,
         print('Simulated Reads:     ', seq_count(simulated_reads_fp))
 
         # Generate simulated community query and reference seqs/taxa pairs
-        generate_cross_validated_sequences(
-            clean_taxa, simulated_reads_fp, index, iterations, cv_dir)
+        if simulation_method == 'cross-validated-trad':
+            generate_cross_validated_trad_sequences(
+                clean_taxa, simulated_reads_fp, index, iterations, cv_dir)
+        else:
+            generate_cross_validated_sequences(
+                clean_taxa, simulated_reads_fp, index, iterations, cv_dir)
 
-        # Generate novel query and reference seqs/taxa pairs
-        generate_novel_sequence_sets(cv_dir, novel_dir, levelrange=levelrange)
+        # Generate novel query and reference seqs/taxa pairs (standard CV only)
+        if simulation_method == 'cross-validated':
+            generate_novel_sequence_sets(
+                cv_dir, novel_dir, levelrange=levelrange)
 
 
 def generate_novel_sequence_sets(cv_dir, novel_dir,
@@ -343,25 +466,27 @@ def generate_novel_sequence_sets(cv_dir, novel_dir,
     '''
 
     for cv_fold_dir in glob(join(cv_dir, '*')):
-        index, iteration = basename(cv_fold_dir).split('-iter')
+        cv_parts = parse_cv_dataset_id(basename(cv_fold_dir))
+        index, iteration = cv_parts.database, cv_parts.iteration
         for level in levelrange:
             novel_fold_dir = join(
-                novel_dir, '-'.join([index, 'L'+str(level), 'iter'+iteration]))
+                novel_dir,
+                format_novel_fold_dirname(index, level, int(iteration)))
             if not exists(novel_fold_dir):
                 makedirs(novel_fold_dir)
 
             # Trim taxonomy strings to level X and copy them into the directory
             query_taxa = trim_taxonomy_strings(
-                join(cv_fold_dir, 'query_taxa.tsv'), level)
-            query_taxa_fp = join(novel_fold_dir, 'query_taxa.tsv')
+                join(cv_fold_dir, QUERY_TAXA_TSV), level)
+            query_taxa_fp = join(novel_fold_dir, QUERY_TAXA_TSV)
             export_list_to_file(query_taxa, query_taxa_fp)
 
             # Create REF TAXONOMY from list of taxonomies that
             #    DO NOT match QUERY taxonomies
-            ref_taxa_fp = join(novel_fold_dir, 'ref_taxa.tsv')
+            ref_taxa_fp = join(novel_fold_dir, REF_TAXA_TSV)
             name_list = '^' + '$|^'.join(list(set(extract_taxa_names(
                 query_taxa_fp, slice(1, level+1), stripchars='')))) + '$'
-            ref_taxa = string_search(join(cv_fold_dir, 'ref_taxa.tsv'),
+            ref_taxa = string_search(join(cv_fold_dir, REF_TAXA_TSV),
                                      name_list, discard=True,
                                      field=slice(1, level+1))
             export_list_to_file(ref_taxa, ref_taxa_fp)
@@ -376,14 +501,14 @@ def generate_novel_sequence_sets(cv_dir, novel_dir,
 
             # Create REF: Filter ref database to contain only seqs that
             #    match non-matching taxonomy strings
-            ref_fp = join(novel_fold_dir, 'ref_seqs.fasta')
-            filter_sequences(join(cv_fold_dir, 'ref_seqs.fasta'),
+            ref_fp = join(novel_fold_dir, REF_SEQS_FASTA)
+            filter_sequences(join(cv_fold_dir, REF_SEQS_FASTA),
                              ref_fp, ref_taxa_fp, keep=True)
 
             # Create QUERY: Filter ref database to contain only seqs
             #    that match QUERY TAXONOMY
-            query_fp = join(novel_fold_dir, 'query.fasta')
-            filter_sequences(join(cv_fold_dir, 'query.fasta'),
+            query_fp = join(novel_fold_dir, QUERY_FASTA)
+            filter_sequences(join(cv_fold_dir, QUERY_FASTA),
                              query_fp, query_taxa_fp, keep=True)
 
             # Encode as Artifacts for convenience
@@ -440,17 +565,18 @@ def generate_cross_validated_sequences(read_taxa, simulated_reads_fp, index,
     # Output the CV data sets in the expected formats
     taxonomy_series = taxonomy.view(pd.Series)
     for iteration, (train, test) in enumerate(splits):
-        db_iter_dir = join(cv_dir, '{0}-iter{1}'.format(index, iteration))
+        db_iter_dir = join(cv_dir, format_cv_fold_dirname(index, iteration))
         if not exists(db_iter_dir):
             makedirs(db_iter_dir)
-        query_taxa_fp = join(db_iter_dir, 'query_taxa.tsv')
-        query_fp = join(db_iter_dir, 'query.fasta')
-        ref_fp = join(db_iter_dir, 'ref_seqs.fasta')
-        ref_taxa_fp = join(db_iter_dir, 'ref_taxa.tsv')
+        query_taxa_fp = join(db_iter_dir, QUERY_TAXA_TSV)
+        query_fp = join(db_iter_dir, QUERY_FASTA)
+        ref_fp = join(db_iter_dir, REF_SEQS_FASTA)
+        ref_taxa_fp = join(db_iter_dir, REF_TAXA_TSV)
 
-        # Output the taxa files
-        train_series = taxonomy_series[train]
-        train_series.to_csv(ref_taxa_fp, sep='\t')
+        # Output the taxa files (pandas >= 2.2 disallows set indexers)
+        train_ids = list(train)
+        train_series = taxonomy_series.loc[train_ids]
+        train_series.to_csv(ref_taxa_fp, sep='\t', header=False)
         # If a taxonomy in the test set doesn't exist in the training set, trim
         # it until it does
         train_taxonomies = set()
@@ -489,16 +615,77 @@ def generate_cross_validated_sequences(read_taxa, simulated_reads_fp, index,
         artifact.save(ref_taxa_fp[:-3] + 'qza')
 
 
+def generate_cross_validated_trad_sequences(read_taxa, simulated_reads_fp, index,
+                                            iterations, cv_dir):
+    '''Cross-validation folds by random split of sequence IDs (traditional CV).
+
+    For each fold, test sequences are drawn at random (``KFold`` with shuffling);
+    reference FASTA and taxonomy contain only training IDs. Query taxonomy lines
+    use the full expected string from the database — no trimming to match the
+    training taxonomies and no check that test taxa appear in the reference.
+    '''
+    if iterations < 2:
+        raise ValueError('Must perform two or more iterations for '
+                         'construction of cross-validated datasets.')
+
+    simulated_reads = list(io.read(simulated_reads_fp, format='fasta'))
+    seq_ids = [seq.metadata['id'] for seq in simulated_reads]
+    taxonomy = Artifact.import_data(
+        'FeatureData[Taxonomy]', read_taxa,
+        view_type='HeaderlessTSVTaxonomyFormat')
+    taxonomy_series = taxonomy.view(pd.Series)
+
+    kf = KFold(n_splits=iterations, shuffle=True, random_state=0)
+    print(index + ': generating', iterations, 'random KFold splits on',
+          len(seq_ids), 'sequences')
+
+    for iteration, (train_idx, test_idx) in enumerate(kf.split(seq_ids)):
+        train = {seq_ids[i] for i in train_idx}
+        test = {seq_ids[i] for i in test_idx}
+        db_iter_dir = join(cv_dir, format_cv_fold_dirname(index, iteration))
+        if not exists(db_iter_dir):
+            makedirs(db_iter_dir)
+        query_taxa_fp = join(db_iter_dir, QUERY_TAXA_TSV)
+        query_fp = join(db_iter_dir, QUERY_FASTA)
+        ref_fp = join(db_iter_dir, REF_SEQS_FASTA)
+        ref_taxa_fp = join(db_iter_dir, REF_TAXA_TSV)
+
+        train_series = taxonomy_series.loc[list(train)]
+        train_series.to_csv(ref_taxa_fp, sep='\t', header=False)
+
+        test_list = [
+            '\t'.join([sid, str(taxonomy_series.loc[sid]).strip()])
+            for sid in sorted(test)]
+        export_list_to_file(test_list, query_taxa_fp)
+
+        with open(ref_fp, 'w') as ref_fasta:
+            with open(query_fp, 'w') as query_fasta:
+                for seq in simulated_reads:
+                    if seq.metadata['id'] in train:
+                        seq.write(ref_fasta, format='fasta')
+                    else:
+                        seq.write(query_fasta, format='fasta')
+
+        artifact = Artifact.import_data('FeatureData[Sequence]', ref_fp)
+        artifact.save(ref_fp[:-5] + 'qza')
+        artifact = Artifact.import_data('FeatureData[Sequence]', query_fp)
+        artifact.save(query_fp[:-5] + 'qza')
+        artifact = Artifact.import_data(
+            'FeatureData[Taxonomy]', ref_taxa_fp,
+            view_type='HeaderlessTSVTaxonomyFormat')
+        artifact.save(ref_taxa_fp[:-3] + 'qza')
+
+
 def test_cross_validated_sequences(data_dir):
     '''confirm that test (query) taxa IDs are not in training (ref) set, but
     that all taxonomy strings are.
     '''
-    simulated_dir = join(data_dir, 'cross-validated')
-    for db_iter_dir in glob(join(simulated_dir, '*-iter*')):
+    simulated_dir = cross_validated_root(data_dir)
+    for db_iter_dir in glob(join(simulated_dir, GLOB_CV_FOLD_DIRS)):
         query_taxa = import_to_list(
-            join(db_iter_dir, 'query_taxa.tsv'), field=0)
+            join(db_iter_dir, QUERY_TAXA_TSV), field=0)
         ref_taxa = import_to_list(
-            join(db_iter_dir, 'ref_taxa.tsv'), field=0)
+            join(db_iter_dir, REF_TAXA_TSV), field=0)
         common = set(query_taxa).intersection(set(ref_taxa))
         if common:
             print('sequences in training and test sets:')
@@ -509,12 +696,12 @@ def test_novel_taxa_datasets(data_dir):
     '''confirm that test (query) taxa IDs and taxonomies are not in training
     (ref) set, but sister branch taxa are.
     '''
-    novel_dir = join(data_dir, 'novel-taxa-simulations')
-    for db_iter_dir in glob(join(novel_dir, '*-L*-iter*')):
+    novel_dir = novel_taxa_simulations_root(data_dir)
+    for db_iter_dir in glob(join(novel_dir, GLOB_NOVEL_FOLD_DIRS)):
         query_taxa = import_taxonomy_to_dict(join(db_iter_dir,
-                                                  'query_taxa.tsv'))
+                                                  QUERY_TAXA_TSV))
         ref_taxa = import_taxonomy_to_dict(join(db_iter_dir,
-                                                'ref_taxa.tsv'))
+                                                REF_TAXA_TSV))
         for key, value in query_taxa.items():
             if key in ref_taxa:
                 print('key duplicate:', basename(db_iter_dir), key)
@@ -523,7 +710,7 @@ def test_novel_taxa_datasets(data_dir):
 
 
 def recall_novel_taxa_dirs(data_dir, databases, iterations,
-                           ref_seqs='ref_seqs.fasta', ref_taxa='ref_taxa.tsv',
+                           ref_seqs=REF_SEQS_FASTA, ref_taxa=REF_TAXA_TSV,
                            max_level=6, min_level=0, multilevel=True):
     '''Given the number of iterations and database names, create list of
     directory names, and dict of reference seqs and reference taxa.
@@ -547,11 +734,11 @@ def recall_novel_taxa_dirs(data_dir, databases, iterations,
         for level in range(max_level, min_level, -1):
             for iteration in range(0, iterations):
                 if multilevel is True:
-                    dataset_name = '{0}-L{1}-iter{2}'.format(database,
+                    dataset_name = format_novel_fold_dirname(database,
                                                              level,
                                                              iteration)
                 else:
-                    dataset_name = '{0}-iter{1}'.format(database, iteration)
+                    dataset_name = format_cv_fold_dirname(database, iteration)
                 dataset_reference_combinations.append((dataset_name,
                                                        dataset_name))
                 reference_dbs[dataset_name] = (join(data_dir, dataset_name,
@@ -669,9 +856,10 @@ def compute_prf(exp, obs, test_type='cross-validated',
         Score averaging method using in sklearn. 'micro', 'weighted', or
         'macro'.
     test_type: str
-        'novel-taxa' or 'cross-validated'.
+        'novel-taxa', 'cross-validated', or 'cross-validated-trad'.
     l_range: range
-        Range of taxonomic levels to test is test_type = 'cross-validated'.
+        Range of taxonomic levels for ``cross-validated`` and
+        ``cross-validated-trad``.
     sample_weight: array-like of shape = [n_samples], optional
         Sample weights.
     '''
@@ -679,7 +867,7 @@ def compute_prf(exp, obs, test_type='cross-validated',
     if test_type in ('mock', 'novel-taxa'):
         p, r, f = precision_recall_fscore(
             exp, obs, sample_weight=sample_weight, exclude=exclude)
-    elif test_type == 'cross-validated':
+    elif test_type in ('cross-validated', 'cross-validated-trad'):
         # initialize p/r/f as lists of 0s, representing each taxonomic level.
         p, r, f = [0] * 7, [0] * 7, [0] * 7
         # iterate over multiple taxonomic levels
@@ -689,8 +877,9 @@ def compute_prf(exp, obs, test_type='cross-validated',
             p[lvl], r[lvl], f[lvl] = precision_recall_fscore(
                 _exp, _obs, sample_weight=sample_weight, exclude=exclude)
     else:
-        raise ValueError('test_type must be "novel-taxa" or "cross-validated" '
-                         'or "mock".')
+        raise ValueError(
+            'test_type must be "novel-taxa", "cross-validated", '
+            '"cross-validated-trad", or "mock".')
 
     return p, r, f
 
@@ -706,156 +895,6 @@ def load_prf(obs_fp, exp_fp, level=slice(0, 7), sort=True):
             'Check inputs: {0}, {1}'.format(obs_fp, exp_fp))
 
     return exp_taxa, obs_taxa
-
-
-def novel_taxa_classification_evaluation(results_dirs, expected_results_dir,
-                                         summary_fp, test_type='novel-taxa'):
-    '''Input glob of novel taxa results, receive a summary of accuracy results.
-    results_dirs = list or glob of novel taxa observed results in format:
-                    precomputed_results_dir/dataset_id/method_id/params_id/
-    expected_results_dir = directory containing expected novel-taxa results in
-                    format:
-                    expected_results_dir/dataset_id/method_id/params_id/
-    summary_fp = filepath to contain summary of results
-    test_type = 'novel-taxa' or 'cross-validated'
-
-    Returns results as df, in addition to printing summary_fp
-    '''
-    results = []
-
-    for results_dir in results_dirs:
-        fields = results_dir.split(sep)
-        dataset_id, method_id, params_id = fields[-3], fields[-2], fields[-1]
-
-        if test_type == 'novel-taxa':
-            index = dataset_id.split('-L')[0]
-            level = int(dataset_id.split('-')[1].lstrip('L').strip())
-            iteration = dataset_id.split('iter')[1]
-        elif test_type == 'cross-validated':
-            index, iteration = dataset_id.split('-iter')
-            level = 6
-
-        # import observed and expected taxonomies to list; order both by ID
-        obs_fp = join(results_dir, 'query_tax_assignments.txt')
-        exp_fp = join(expected_results_dir, dataset_id, 'query_taxa.tsv')
-        exp_taxa, obs_taxa = load_prf(obs_fp, exp_fp)
-
-        p, r, f = compute_prf(exp_taxa, obs_taxa, test_type=test_type)
-
-        # Create empty list of levels at which first mismatch occurs
-        mismatch_level_list = [0] * 8
-        log = ['dataset\tlevel\titeration\tmethod\tparameters\
-               \tobserved_taxonomy\texpected_taxonomy\tresult\tmismatch_level\
-               \tPrecision\tRecall\tF-measure']
-
-        # loop through observations, store results to counter
-        record_counter = Counter()
-        for obs, exp in zip(obs_taxa, exp_taxa):
-            # Find shallowest level of mismatch
-            mismatch_level = find_last_common_ancestor(obs, exp)
-            mismatch_level_list[mismatch_level] += 1
-
-            # evaluate novel taxa classification
-            result = evaluate_classification(obs, exp)
-
-            record_counter.update({'line_count': 1})
-            record_counter.update({result: 1})
-            log.append('\t'.join(map(str, [index, level, iteration,
-                                           method_id, params_id,
-                                           obs, exp, result,
-                                           mismatch_level, p, r, f])))
-
-        # Create log file
-        log_fp = join(results_dir, 'classification_accuracy_log.tsv')
-        export_list_to_file(log, log_fp)
-
-        # tally score ratios
-        match_ratio = count_records(record_counter, 'match', 'line_count')
-        overclass = count_records(record_counter, 'overclassification',
-                                  'line_count')
-        underclass = count_records(record_counter, 'underclassification',
-                                   'line_count')
-        misclass = count_records(record_counter, 'misclassification',
-                                 'line_count')
-
-        # add everything to results
-        results.append((index, level, iteration, method_id, params_id,
-                        match_ratio, overclass, underclass, misclass,
-                        mismatch_level_list, p, r, f))
-
-    # send to dataframe, write to summary_fp
-    result = pd.DataFrame(results, columns=["Dataset", "level", "iteration",
-                                            "Method", "Parameters",
-                                            "match_ratio",
-                                            "overclassification_ratio",
-                                            "underclassification_ratio",
-                                            "misclassification_ratio",
-                                            "mismatch_level_list", "Precision",
-                                            "Recall", "F-measure"])
-    result.to_csv(summary_fp)
-    return result
-
-
-# tag for modification: if we remove match/LCA, remove support from this fn
-def extract_per_level_accuracy(df, columns=['Precision', 'Recall', 'F-measure',
-                                            'mismatch_level_list']):
-    '''Generate new pandas dataframe, containing match ratios for taxonomic
-    assignments at each taxonomic level. Extracts mismatch_level_list from a
-    dataframe and splits this into separate df entries for plotting.
-
-    df: dataframe
-        pandas dataframe
-    column: list
-        column names containing mismatch_level_list or other lists to be
-        separated into multiple dataframe entries for plotting.
-
-        mismatch_level_list reports mismatches at each level of taxonomic
-        assignment (8 levels).
-
-        Currently levels  are hardcoded, but could be adjusted
-        below in lines:
-            for level in range(1, 7):
-    '''
-    results = []
-
-    for index, data in df.iterrows():
-        for level in range(1, 7):
-            level_results = []
-            col_names = []
-            for column in columns:
-                # If using precomputed results, mismatch_level_list is imported
-                # as string, hence must be converted back to list of integers.
-                if isinstance(data[column], str):
-                    col = list(map(float, data[column].strip('[]').split(',')))
-                else:
-                    col = data[column]
-                # 'mismatch_level_list' contains level of first mismatch for
-                # each observation; hence, matches at level L = total
-                # observations - cumulative mismatches / total observations
-                if column == 'mismatch_level_list':
-                    linecount = sum(col)
-                    col_names.append("match_ratio")
-                    cumulative_mismatches = sum(col[0:level+1])
-                    if cumulative_mismatches < linecount:
-                        score = (linecount - cumulative_mismatches) / linecount
-                    else:
-                        score = col[0]
-                # Otherwise just extract score at level index.
-                else:
-                    score = col[level]
-                    col_names.append(column)
-
-                # add column score for level to level_results
-                level_results.append(score)
-
-            results.append((data['Dataset'], level, data['iteration'],
-                            data['Method'], data['Parameters'],
-                            *[s for s in level_results]))
-
-    result = pd.DataFrame(results, columns=["Dataset", "level", "iteration",
-                                            "Method", "Parameters",
-                                            *[s for s in col_names]])
-    return result
 
 
 def runtime_make_test_data(seqs_in, results_dir, sampling_depths):
@@ -948,3 +987,9 @@ def clock_runtime(command, results_fp, force=False):
     results = [method, q_frac, r_frac, iteration, end - start]
     with open(results_fp, 'a') as timeout:
         timeout.write('\t'.join(map(str, results)) + '\n')
+
+
+from tax_credit.novel_evaluation import (  # noqa: E402
+    extract_per_level_accuracy,
+    novel_taxa_classification_evaluation,
+)

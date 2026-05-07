@@ -2307,8 +2307,8 @@ class EvalFrameworkTests(TestCase):
         self.table2 = Table.from_json(json.loads(_table2))
         self.table3 = Table.from_json(json.loads(_table3))
 
-        self.mock_result_table1 = pd.DataFrame.from_csv(
-            StringIO(_mock_result_table1))
+        self.mock_result_table1 = pd.read_csv(
+            StringIO(_mock_result_table1), index_col=0)
 
         self.tmpdir = mkdtemp()
 

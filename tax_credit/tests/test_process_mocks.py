@@ -12,7 +12,11 @@
 from unittest import TestCase, main
 import json
 from biom import Table
-from tax_credit.process_mocks import (amend_biom_taxonomy_ids)
+from tax_credit import mock_denoise
+from tax_credit import mock_transport
+from tax_credit import mockrobiota_extract
+from tax_credit.process_mocks import amend_biom_taxonomy_ids
+import tax_credit.process_mocks as process_mocks
 
 
 class EvalFrameworkTests(TestCase):
@@ -163,6 +167,54 @@ class EvalFrameworkTests(TestCase):
         # k__[Fungi]    9.0 10.0    11.0    12.0
 
         self.table1 = Table.from_json(json.loads(_table1))
+
+
+class ProcessMocksPhase5FacadeTests(TestCase):
+    """Phase 5: ``process_mocks`` re-exports match submodule implementations."""
+
+    def test_mockrobiota_extract_reexports(self):
+        self.assertIs(
+            process_mocks.extract_mockrobiota_dataset_metadata,
+            mockrobiota_extract.extract_mockrobiota_dataset_metadata,
+        )
+        self.assertIs(
+            process_mocks.extract_mockrobiota_data,
+            mockrobiota_extract.extract_mockrobiota_data,
+        )
+        self.assertIs(
+            process_mocks.amend_biom_taxonomy_ids,
+            mockrobiota_extract.amend_biom_taxonomy_ids,
+        )
+        self.assertIs(
+            process_mocks.clean_taxonomy_ids,
+            mockrobiota_extract.clean_taxonomy_ids,
+        )
+
+    def test_mock_denoise_reexports(self):
+        self.assertIs(process_mocks.batch_demux, mock_denoise.batch_demux)
+        self.assertIs(
+            process_mocks.demux_to_plot_quality,
+            mock_denoise.demux_to_plot_quality,
+        )
+        self.assertIs(process_mocks.visualize_qual, mock_denoise.visualize_qual)
+        self.assertIs(
+            process_mocks.load_demux_seqs, mock_denoise.load_demux_seqs
+        )
+        self.assertIs(
+            process_mocks.denoise_to_phylogeny,
+            mock_denoise.denoise_to_phylogeny,
+        )
+        self.assertIs(
+            process_mocks.denoise_to_feature_table,
+            mock_denoise.denoise_to_feature_table,
+        )
+        self.assertIs(process_mocks.seqs_to_tree, mock_denoise.seqs_to_tree)
+
+    def test_mock_transport_reexports(self):
+        self.assertIs(
+            process_mocks.transport_to_repo,
+            mock_transport.transport_to_repo,
+        )
 
 
 if __name__ == "__main__":

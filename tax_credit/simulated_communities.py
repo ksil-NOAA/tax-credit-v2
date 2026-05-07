@@ -69,7 +69,7 @@ def generate_simulated_communities(sim_dir, datasets, reference_dbs,
 
         # extract taxa names from expected-composition
         exp_comp_fp = join(community_dir, 'expected-composition.txt')
-        comp = pd.DataFrame.from_csv(exp_comp_fp, sep='\t')
+        comp = pd.read_csv(exp_comp_fp, sep='\t', index_col=0)
         # extract taxa and per-sample frequencies
         taxa = {t: {s: comp.loc[s, t]
                     for s in comp.index} for t in comp.columns}

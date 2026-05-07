@@ -29,14 +29,6 @@ from glob import glob
 from os.path import join, split
 from itertools import combinations
 from IPython.display import display, Markdown
-from bokeh.plotting import figure, show, output_file
-from bokeh.models import (HoverTool,
-                          WheelZoomTool,
-                          PanTool,
-                          ResetTool,
-                          SaveTool,
-                          ColumnDataSource)
-from bokeh.io import output_notebook
 
 
 def lmplot_from_data_frame(df, x, y, group_by=None, style_theme="whitegrid",
@@ -327,7 +319,6 @@ def beta_diversity_pcoa(biom_fp, method="braycurtis", permutations=99, dim=2,
     print('R = ', results['test statistic'], '; P = ', results['p-value'])
 
     if dim == 2:
-        # bokeh pcoa plots
         pc123 = pc.samples.loc[:, ["PC1", "PC2", "PC3"]]
         smd_merge = s_md.merge(pc123, left_index=True, right_index=True)
         smd_merge['Color'] = [colormap[x] for x in smd_merge['method']]
@@ -346,53 +337,86 @@ def beta_diversity_pcoa(biom_fp, method="braycurtis", permutations=99, dim=2,
 
 
 def circle_plot_from_dataframe(df, x, y, title=None, color="Color",
-                               columns=["method", "sample_id", "params"],
-                               labels=None, plot_width=400, plot_height=400,
-                               fill_alpha=0.2, size=10, output_fn=None):
-    '''Make bokeh circle plot from dataframe, use df columns for hover tool.
+                               columns=None, labels=None, plot_width=400,
+                               plot_height=400, fill_alpha=0.2, size=10,
+                               output_fn=None):
+    '''2D scatter from dataframe (matplotlib). Uses *color* column for face colors.
+
     df: pandas.DataFrame
         Containing all sample data, including color categories.
-    x: str
-        df category to use for x-axis coordinates.
-    y: str
-        df category to use for y-axis coordinates.
+    x, y: str
+        Column names for coordinates.
     title: str
-        Title to print above plot.
+        Figure title.
     color: str
-        df category to use for coloring data points.
-    columns: list
-        df categories to add as hovertool metadata.
-    labels: list
-        Axis labels for x and y axes. If none, default to column names.
-    output_fn: path
-        Filepath for output file. Defaults to None.
-
-    Other parameters feed directly to bokeh.plotting.
+        Column of matplotlib color names/hex for each point.
+    columns: list or None
+        Columns used for legend grouping (first column must exist in *df*).
+    labels: list or None
+        Axis labels for x and y; defaults to *x* and *y* column names.
+    output_fn: path or None
+        If set, save figure to this path (e.g. ``.png``).
     '''
+    if columns is None:
+        columns = ["method", "sample_id", "params"]
     if labels is None:
         labels = [x, y]
 
-    source = ColumnDataSource(df)
-    hover = HoverTool(tooltips=[(c, '@' + c) for c in columns])
+    legend_col = columns[0] if columns and columns[0] in df.columns else None
 
-    TOOLS = [hover, WheelZoomTool(), PanTool(), ResetTool(), SaveTool()]
+    # figsize in inches (~ pixel size / 100 for notebook-friendly scale)
+    w_in = max(plot_width / 100.0, 3.0)
+    h_in = max(plot_height / 100.0, 3.0)
+    fig, ax = plt.subplots(figsize=(w_in, h_in))
 
-    fig = figure(title=title, tools=TOOLS, plot_width=plot_width,
-                 plot_height=plot_height)
+    area = (size * 12) ** 2 / 100.0
+    for _, row in df.iterrows():
+        ax.scatter(
+            row[x],
+            row[y],
+            color=row[color],
+            alpha=fill_alpha,
+            s=area,
+            edgecolors="0.35",
+            linewidths=0.4,
+        )
 
-    # Set asix labels
-    fig.xaxis.axis_label = labels[0]
-    fig.yaxis.axis_label = labels[1]
+    if legend_col is not None:
+        seen = set()
+        for _, row in df.iterrows():
+            lab = row[legend_col]
+            if lab in seen:
+                continue
+            seen.add(lab)
+            ax.scatter(
+                [],
+                [],
+                color=row[color],
+                alpha=fill_alpha,
+                s=area,
+                edgecolors="0.35",
+                linewidths=0.4,
+                label=str(lab),
+            )
+        ax.legend(
+            title=legend_col,
+            bbox_to_anchor=(1.02, 1),
+            loc="upper left",
+            borderaxespad=0.0,
+            fontsize="small",
+        )
 
-    # Plot x and y axes
-    fig.circle(x, y, source=source, color=color, fill_alpha=fill_alpha,
-               size=size)
+    ax.set_xlabel(labels[0])
+    ax.set_ylabel(labels[1])
+    if title is not None:
+        ax.set_title(title)
+    fig.tight_layout()
 
     if output_fn is not None:
-        output_file(output_fn)
+        fig.savefig(output_fn, bbox_inches="tight", dpi=150)
 
-    output_notebook()
-    show(fig)
+    plt.show()
+    plt.close(fig)
 
 
 def pcoa_plot_skbio(pc, s_md, col='method'):
@@ -546,7 +570,7 @@ def _show_method_rank(best, group_by, params, metric, display_fields,
     '''Find the best param configuration for each method and show those
     configs, along with the parameters and metric scores.
     '''
-    avg_best = best.groupby([group_by, params]).mean().reset_index()
+    avg_best = best.groupby([group_by, params]).mean(numeric_only=True).reset_index()
     avg_best_sorted = avg_best.sort_values(by=metric, ascending=ascending)
     method_rank = avg_best_sorted.loc[:, display_fields]
     display(method_rank)
@@ -741,7 +765,7 @@ def isolate_top_params(df, group_by="Method", params="Parameters",
     param_report = []
     for group in df[group_by].unique():
         subset = df[df[group_by] == group]
-        avg = subset.groupby(params).mean().reset_index()
+        avg = subset.groupby(params).mean(numeric_only=True).reset_index()
         sorted_avg = avg.sort_values(by=metric, ascending=ascending)
         top_param = sorted_avg.reset_index()[params][0]
         param_report.append((group, top_param))

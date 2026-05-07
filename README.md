@@ -4,6 +4,8 @@
 
 ### A standardized and extensible evaluation framework for taxonomic classifiers
 
+**Documentation:** [docs/index.md](docs/index.md) (installation, layout, Python API, notebooks).
+
 To view static versions of the reports , [start here](https://github.com/caporaso-lab/tax-credit/blob/master/ipynb/Index.ipynb).
 
 
