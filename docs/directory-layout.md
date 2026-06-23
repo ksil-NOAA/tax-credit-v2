@@ -38,14 +38,21 @@ Common filenames (constants in `paths.py`) include:
 
 Under the data directory, simulation roots use names exposed in `simulation_names.py`:
 
-- `DIR_CROSS_VALIDATED` — `cross-validated`
-- `DIR_NOVEL_TAXA_SIMULATIONS` — `novel-taxa-simulations`
-- Reference databases often under `ref_dbs/`
+| Constant | Folder | Contents |
+|----------|--------|----------|
+| `DIR_CROSS_VALIDATED` | `cross-validated/` | **`cross-validated-taxa`** folds — stratified CV; per-fold `ref_seqs.fasta` / `ref_taxa.tsv` exclude query IDs. |
+| `DIR_CROSS_VALIDATED_TRAD` | `cross-validated-trad/` | **`cross-validated-trad`** folds — random KFold; `query.fasta` / `query_taxa.tsv` are the test split only; `ref_seqs.fasta` and `ref_taxa.tsv` are **symlinks** to the full simulated-reads FASTA and cleaned taxonomy under `ref_dbs/`. |
+| `DIR_NOVEL_TAXA_SIMULATIONS` | `novel-taxa-simulations/` | **Novel-taxa** derived datasets (from CV-taxa folds). |
+| `DIR_REF_DBS` | `ref_dbs/` | Per–reference-id cleaned FASTA, taxonomy, extracted simulated reads, and (for trad) shared QIIME artifacts: `_trad_cv_shared_ref_seqs.qza`, `_trad_cv_shared_ref_taxa.qza`. |
+
+`generate_simulated_datasets(..., simulation_method=...)` controls which of these trees are written. By default it builds **all** three simulation types. Requesting **`novel-taxa`** without **`cross-validated-taxa`** still runs the CV-taxa generator internally to feed novel-taxa construction, then removes the temporary fold directories (see `framework_functions` source).
 
 Fold directory names are generated and parsed with helpers such as:
 
-- `format_cv_fold_dirname` / `parse_cv_dataset_id` — e.g. `<db>-iter<n>`
+- `format_cv_fold_dirname` / `parse_cv_dataset_id` — e.g. `<db>-iter<n>` (used for both `cross-validated` and `cross-validated-trad` trees)
 - `format_novel_fold_dirname` / `parse_novel_dataset_id` — e.g. `<db>-L<level>-iter<n>` (supports hyphenated database IDs like `B1-REF`)
+
+Path roots: `cross_validated_root`, `cross_validated_trad_root`, `novel_taxa_simulations_root`, `ref_dbs_root` in `simulation_names.py`.
 
 ## Assignment result directories (novel / CV)
 
@@ -57,11 +64,14 @@ Paths ending in:
 
 are parsed by `parse_assignment_results_dir`.
 
+Sweeps write one level higher: `results_root/<dataset_id>/<reference_id>/<method_id>/<params_id>/` (with `dataset_id == reference_id` for fold-based sims). To collect leaves that contain `query_tax_assignments.txt` (and skip trad **fit** dirs that only hold `classifier.qza`), use `list_assignment_result_dirs(results_root)` in `paths.py`.
+
 ## Using the API
 
 Prefer **named helpers** over manual `split`/`join`:
 
 - `mock_observed_tables_glob`, `expected_tables_glob`
+- `assignment_result_leaf_glob`, `list_assignment_result_dirs`
 - `parse_mock_result_table_path`, `parse_expected_table_path`
 - `parse_result_leaf_dir_to_parts`, `parse_taxonomy_map_path_to_dataset_id`
 

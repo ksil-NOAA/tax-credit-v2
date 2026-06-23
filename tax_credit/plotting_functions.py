@@ -63,7 +63,8 @@ def lmplot_from_data_frame(df, x, y, group_by=None, style_theme="whitegrid",
 
 def pointplot_from_data_frame(df, x_axis, y_vars, group_by, color_by,
                               color_palette, style_theme="whitegrid",
-                              plot_type=sns.pointplot):
+                              plot_type=sns.pointplot, title_prefix=None,
+                              show=True):
     '''Generate seaborn pointplot from pandas dataframe.
     df = pandas.DataFrame
     x_axis = x axis variable
@@ -77,18 +78,27 @@ def pointplot_from_data_frame(df, x_axis, y_vars, group_by, color_by,
     '''
     grid = dict()
     sns.set_style(style_theme)
+    x_order = sorted(df[x_axis].unique(), key=lambda v: (isinstance(v, str), v))
+    hue_order = sorted(df[color_by].unique())
     for y_var in y_vars:
         grid[y_var] = sns.FacetGrid(df, col=group_by, hue=color_by,
                                     palette=color_palette)
         grid[y_var] = grid[y_var].map(
-            sns.pointplot, x_axis, y_var, markers="o")
+            sns.pointplot, x_axis, y_var, markers="o",
+            order=x_order, hue_order=hue_order,
+        )
         grid[y_var].add_legend()
-    plt.show()
+        if title_prefix:
+            grid[y_var].fig.suptitle(f"{title_prefix}: {y_var}", fontsize=14)
+            grid[y_var].fig.subplots_adjust(top=0.88)
+    if show:
+        plt.show()
     return grid
 
 
 def heatmap_from_data_frame(df, metric, rows=["Method", "Parameters"],
-                            cols=["Dataset"], vmin=0, vmax=1, cmap='Reds'):
+                            cols=["Dataset"], vmin=0, vmax=1, cmap='Reds',
+                            title=None, show=True):
     """Generate heatmap of specified metric by (method, parameter) x dataset
 
     df: pandas.DataFrame
@@ -103,16 +113,32 @@ def heatmap_from_data_frame(df, metric, rows=["Method", "Parameters"],
     df = df.pivot_table(index=rows, columns=cols, values=metric)
     df.sort_index()
 
-    height = len(df.index) * 0.35
-    width = len(df.columns) * 1
+    n_rows, n_cols = max(len(df.index), 1), max(len(df.columns), 1)
+    cell_h = min(0.35, max(0.12, 10 / n_rows))
+    cell_w = min(0.75, max(0.2, 14 / n_cols))
+    height = max(4, n_rows * cell_h + 2.0)
+    width = max(6, n_cols * cell_w + 2.5)
 
-    ax = plt.figure(figsize=(width, height))
-    ax = heatmap(df, cmap=cmap, linewidths=0, square=True, vmin=vmin,
-                 vmax=vmax)
+    fig, ax = plt.subplots(figsize=(width, height))
+    heatmap(
+        df,
+        cmap=cmap,
+        linewidths=0,
+        square=False,
+        vmin=vmin,
+        vmax=vmax,
+        ax=ax,
+        cbar_kws={"shrink": 0.75, "pad": 0.02},
+    )
 
-    ax.set_title(metric, fontsize=20)
+    ax.set_title(title or metric, fontsize=14, pad=12)
+    ax.tick_params(axis="x", labelrotation=45, labelsize=9)
+    ax.tick_params(axis="y", labelsize=8 if n_rows > 15 else 9)
+    plt.setp(ax.get_xticklabels(), ha="right", rotation_mode="anchor")
+    fig.subplots_adjust(left=0.28, bottom=0.18, top=0.92, right=0.98)
 
-    plt.show()
+    if show:
+        plt.show()
 
     return ax
 
@@ -124,9 +150,11 @@ def boxplot_from_data_frame(df,
                             y_min=0.0,
                             y_max=1.0,
                             plotf=violinplot,
-                            color='grey',
+                            color=None,
                             color_palette=None,
-                            label_rotation=45):
+                            label_rotation=45,
+                            title=None,
+                            show=True):
     """Generate boxplot or violinplot of metric by group
 
     To generate boxplots instead of violin plots, pass plotf=seaborn.boxplot
@@ -139,15 +167,37 @@ def boxplot_from_data_frame(df,
     """
 
     sns.set_style("whitegrid")
-    ax = violinplot(x=group_by, y=metric, hue=hue, data=df, color=color,
-                    palette=color_palette, order=sorted(df[group_by].unique()))
+    n_groups = df[group_by].nunique()
+    fig, ax = plt.subplots(figsize=(max(6, n_groups * 0.85), 5))
+    plot_kwargs = {
+        "x": group_by,
+        "y": metric,
+        "hue": hue,
+        "data": df,
+        "palette": color_palette,
+        "order": sorted(df[group_by].unique()),
+        "ax": ax,
+    }
+    if hue is None:
+        plot_kwargs["color"] = color if color is not None else "grey"
+    plotf(**plot_kwargs)
     ax.set_ylim(bottom=y_min, top=y_max)
     ax.set_ylabel(metric)
     ax.set_xlabel(group_by)
+    if title:
+        ax.set_title(title, fontsize=14)
     for lab in ax.get_xticklabels():
         lab.set_rotation(label_rotation)
-
-    plt.show()
+        lab.set_ha("right")
+    if hue is not None:
+        ax.legend(title=hue, bbox_to_anchor=(1.02, 1), loc="upper left")
+    fig.subplots_adjust(
+        bottom=0.22,
+        right=0.82 if hue is not None else 0.95,
+        top=0.90,
+    )
+    if show:
+        plt.show()
 
     return ax
 

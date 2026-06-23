@@ -14,7 +14,13 @@ Typical outputs: precision, recall, F-measure, taxon detection, and optional per
 
 ### Cross-validated reference classification
 
-**Train / test splits on a reference database.** Query sequences are held out from the reference used for classification; labels are still known, so classic **precision and recall** apply at multiple taxonomic levels.
+Simulations split a reference database into **query** (test) and **reference** (training) folds. Labels remain known, so classic **precision and recall** apply at multiple taxonomic levels. `framework_functions.generate_simulated_datasets` can produce one or more layouts via **`simulation_method`** (default: all of the following):
+
+- **`cross-validated-taxa`** (maps to on-disk `cross-validated/`): stratified folds by taxonomic strata; query labels may be trimmed so each expected taxonomy prefix appears somewhere in the training taxonomies. Queries are **not** present in the per-fold reference FASTA / taxonomy tables.
+
+- **`cross-validated-trad`** (`cross-validated-trad/`): random **KFold** splits by sequence ID; query FASTA and `query_taxa.tsv` contain only the test fold. **`ref_seqs.fasta`** and **`ref_taxa.tsv`** are **symbolic links** to the full simulated-reads FASTA and cleaned taxonomy for that database, so the classifier sees **every** sequence (including queries). Evaluation still compares assignments to the held-out query labels. Shared **`ref_seqs.qza`** / **`ref_taxa.qza`** artifacts under `ref_dbs/` reduce duplication across folds (see [directory-layout.md](directory-layout.md)).
+
+The legacy alias **`cross-validated`** means **`cross-validated-taxa`**.
 
 ### Novel-taxa simulations
 
@@ -22,9 +28,9 @@ Typical outputs: precision, recall, F-measure, taxon detection, and optional per
 
 ## Data flow (high level)
 
-1. **Simulate or acquire** communities and reference data (see `framework_functions`, `simulated_communities`, and mock-community notebooks).
+1. **Simulate or acquire** communities and reference data (see `framework_functions.generate_simulated_datasets`, `simulated_communities`, and notebooks under `ipynb/novel-taxa/` and `ipynb/cross-validated/`).
 2. **Run classifiers** (QIIME 2, BLAST, legacy QIIME 1, etc.) and place outputs under the expected directory depth (see [directory-layout.md](directory-layout.md)).
-3. **Evaluate** with `mock_evaluation.evaluate_results` (mock-style BIOM) or `novel_evaluation.novel_taxa_classification_evaluation` (novel/CV text assignments).
+3. **Evaluate** with `mock_evaluation.evaluate_results` (mock-style BIOM) or `novel_evaluation.novel_taxa_classification_evaluation` (novel / CV / CV-trad text assignments; set `test_type` accordingly).
 4. **Visualize** with `plotting_functions` and pandas/seaborn in notebooks.
 
 ## BIOM and QIIME 2

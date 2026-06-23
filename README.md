@@ -6,6 +6,8 @@
 
 **Documentation:** [docs/index.md](docs/index.md) (installation, layout, Python API, notebooks).
 
+**Tourmaline integration:** Tourmaline 2 can run tax-credit as step 4 via `tourmaline.sh --step tax-credit` with `config_04_tax_credit.yaml` (see the Tourmaline `docs/configuration.md` and `docs/running.md`).
+
 To view static versions of the reports , [start here](https://github.com/caporaso-lab/tax-credit/blob/master/ipynb/Index.ipynb).
 
 

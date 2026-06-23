@@ -35,6 +35,9 @@ def novel_taxa_classification_evaluation(results_dirs, expected_results_dir,
     '''Input glob of novel taxa results, receive a summary of accuracy results.
     results_dirs = list or glob of novel taxa observed results in format:
                     precomputed_results_dir/dataset_id/method_id/params_id/
+                    For the usual four-level sweep tree under a single root, use
+                    ``tax_credit.paths.list_assignment_result_dirs`` instead of
+                    hand-written globs.
     expected_results_dir = directory containing expected novel-taxa results in
                     format:
                     expected_results_dir/dataset_id/method_id/params_id/

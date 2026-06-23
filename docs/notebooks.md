@@ -15,7 +15,7 @@ A narrative index also appears in [ipynb/README.md](../ipynb/README.md).
 |--------|--------|
 | `mock-community/` | Mockrobiota retrieval, QIIME 2 preprocessing, taxonomy assignment templates, mock accuracy evaluation |
 | `cross-validated/` | CV simulation outputs, classification evaluation |
-| `novel-taxa/` | Novel-taxa simulation and evaluation |
+| `novel-taxa/` | Novel-taxa simulation and evaluation (dataset generation calls `generate_simulated_datasets`; use `simulation_method` to select `cross-validated-taxa`, `cross-validated-trad`, and/or `novel-taxa`) |
 | `simulated-community/` | Simulated communities, assignment, evaluation |
 | `runtime/` | Runtime benchmarking |
 
@@ -29,6 +29,12 @@ These match the “Quick Links” in the supplementary README:
 - **Simulated community performance** — [`simulated-community/evaluate-classification-accuracy.ipynb`](../ipynb/simulated-community/evaluate-classification-accuracy.ipynb): composition recovery on synthetic communities.
 - **Runtime comparison** — [`runtime/analysis.ipynb`](../ipynb/runtime/analysis.ipynb).
 - **Reference database comparison** — [`mock-community/evaluate-classification-database-comparison.ipynb`](../ipynb/mock-community/evaluate-classification-database-comparison.ipynb): same mock/method, different references.
+
+## Simulated reference datasets (CV and novel-taxa)
+
+To build on-disk fold trees under `data_dir`, use `from tax_credit.framework_functions import generate_simulated_datasets` (see [Python API](python-api.md) and `ipynb/novel-taxa/dataset-generation.ipynb`). The **`simulation_method`** argument selects which outputs to create: `cross-validated-taxa` (`cross-validated/`), `cross-validated-trad` (`cross-validated-trad/`, with symlinks to the full reference and shared `ref_*.qza` under `ref_dbs/`), and `novel-taxa` (`novel-taxa-simulations/`). The default runs **all** three. For assignment evaluation, use `novel_taxa_classification_evaluation` with `test_type='cross-validated'` or `'cross-validated-trad'` as appropriate.
+
+Taxonomy-assignment notebooks use **`recall_simulated_taxa_dirs`** (with `novel_taxa_simulations_root` or `cross_validated_root` as the path root) to build sweep inputs for `parameter_sweep` / `gen_param_sweep`.
 
 ## Import patterns (updated)
 

@@ -9,7 +9,7 @@
 # ----------------------------------------------------------------------------
 
 from os import makedirs
-from os.path import exists, join
+from os.path import exists, islink, join, realpath
 from collections import Counter
 from glob import glob
 from shutil import copy, rmtree
@@ -28,6 +28,7 @@ from tax_credit.framework_functions import (
 from tax_credit.paths import (
     QUERY_TAXA_TSV,
     QUERY_TAX_ASSIGNMENTS_TXT,
+    REF_SEQS_FASTA,
     REF_TAXA_TSV,
 )
 from tax_credit.simulation_names import (
@@ -91,6 +92,9 @@ class EvalFrameworkTests(TestCase):
             for key, value in query_taxa.items():
                 self.assertNotIn(key, ref_taxa)
                 self.assertNotIn(value, ref_taxa.values())
+        # default behavior should also generate traditional CV folds
+        self.assertTrue(exists(join(
+            cross_validated_trad_root(self.tmpdir), 'B1-REF-iter0')))
 
     def test_generate_simulated_datasets_trim_primers_optional(self):
         tmp = mkdtemp()
@@ -251,6 +255,12 @@ class EvalFrameworkTests(TestCase):
                     ref_data, tmp, 2, read_length=100,
                     levelrange=range(6, 5, -1), trim_primers=False,
                     simulation_method='not-a-method')
+            with self.assertRaises(ValueError):
+                generate_simulated_datasets(
+                    ref_data, tmp, 2, read_length=100,
+                    levelrange=range(6, 5, -1), trim_primers=False,
+                    simulation_method=['cross-validated-taxa',
+                                       'not-a-method'])
         finally:
             rmtree(tmp)
 
@@ -288,17 +298,68 @@ class EvalFrameworkTests(TestCase):
                 levelrange=range(6, 5, -1), trim_primers=False,
                 simulation_method='cross-validated-trad')
             trad = cross_validated_trad_root(tmp)
-            clean_taxa = join(ref_dbs_root(tmp), 'ref1', 'query_taxa_clean.tsv')
-            expected = import_taxonomy_to_dict(clean_taxa)
+            clean_taxa_path = join(
+                ref_dbs_root(tmp), 'ref1', 'query_taxa_clean.tsv')
+            expected = import_taxonomy_to_dict(clean_taxa_path)
+            sim_reads = join(
+                ref_dbs_root(tmp), 'ref1', 'ref1_515f-806r_trunc.fasta')
             for i in range(2):
                 fold = join(trad, 'B1-REF-iter{}'.format(i))
                 qt = import_taxonomy_to_dict(join(fold, QUERY_TAXA_TSV))
                 for sid, tax in qt.items():
                     self.assertEqual(tax, expected[sid])
-                qids = import_to_list(join(fold, QUERY_TAXA_TSV), field=0)
-                rids = import_to_list(join(fold, REF_TAXA_TSV), field=0)
-                self.assertEqual(set(qids).intersection(set(rids)), set())
+                self.assertTrue(islink(join(fold, REF_SEQS_FASTA)))
+                self.assertTrue(islink(join(fold, REF_TAXA_TSV)))
+                self.assertEqual(
+                    realpath(join(fold, REF_SEQS_FASTA)), realpath(sim_reads))
+                self.assertEqual(
+                    realpath(join(fold, REF_TAXA_TSV)),
+                    realpath(clean_taxa_path))
+                qids = set(import_to_list(join(fold, QUERY_TAXA_TSV), field=0))
+                rids = set(import_to_list(join(fold, REF_TAXA_TSV), field=0))
+                self.assertTrue(qids.issubset(rids))
             self.assertFalse(exists(novel_taxa_simulations_root(tmp)))
+            self.assertFalse(exists(cross_validated_root(tmp)))
+        finally:
+            rmtree(tmp)
+
+    def test_generate_simulated_datasets_novel_taxa_only(self):
+        tmp = mkdtemp()
+        try:
+            copy(join(self.tmpdir, 'ref1.txt'), join(tmp, 'ref1.txt'))
+            name = 'B1-REF-L6-iter0'
+            qdir = join(tmp, name)
+            makedirs(qdir)
+            copy(self.query_fp, join(qdir, QUERY_TAXA_TSV))
+            databases = {
+                'B1-REF': [
+                    join(tmp, 'ref1.txt'),
+                    join(qdir, QUERY_TAXA_TSV),
+                    'ref1',
+                    'GTGCCAGCMGCCGCGGTAA',
+                    'GGACTACHVGGGTWTCTAAT',
+                    '515f',
+                    '806r',
+                ],
+            }
+            ref_data = pd.DataFrame.from_dict(databases, orient='index')
+            ref_data.columns = [
+                'Reference file path',
+                'Reference tax path',
+                'Reference id',
+                'Fwd primer',
+                'Rev primer',
+                'Fwd primer id',
+                'Rev primer id',
+            ]
+            generate_simulated_datasets(
+                ref_data, tmp, 2, read_length=100,
+                levelrange=range(6, 5, -1), trim_primers=False,
+                simulation_method='novel-taxa')
+            self.assertTrue(exists(join(
+                novel_taxa_simulations_root(tmp), 'B1-REF-L6-iter0')))
+            self.assertFalse(exists(cross_validated_root(tmp)))
+            self.assertFalse(exists(cross_validated_trad_root(tmp)))
         finally:
             rmtree(tmp)
 

@@ -12,6 +12,12 @@
 
 This module centralizes glob patterns and path parsing so directory depth and
 basename contracts stay consistent across eval, simulation, and utilities.
+
+Novel / CV assignment outputs from ``parameter_sweep`` (and trad CV classify steps)
+use four segments under a results root:
+``<dataset>/<reference>/<method>/<parameters>/`` (with ``dataset == reference`` for
+fold-based sims). Use ``list_assignment_result_dirs`` to collect leaves that contain
+``query_tax_assignments.txt`` for ``novel_taxa_classification_evaluation``.
 """
 
 from __future__ import annotations
@@ -123,6 +129,55 @@ def parse_assignment_results_dir(results_dir: str) -> AssignmentResultParts:
             "<dataset_id>/<method_id>/<params_id>; got {!r}".format(results_dir)
         )
     return AssignmentResultParts(parts[-3], parts[-2], parts[-1])
+
+
+def assignment_result_leaf_glob(results_root: str) -> str:
+    """Glob pattern for assignment leaf directories under *results_root*.
+
+    Matches the sweep layout ``<dataset>/<reference>/<method>/<parameters>/`` (no
+    trailing filename). Pair with a filter on ``QUERY_TAX_ASSIGNMENTS_TXT`` if
+    the tree also contains classifier-only leaves (e.g. cross-validated-trad).
+    """
+    return str(Path(results_root) / "*" / "*" / "*" / "*")
+
+
+def list_assignment_result_dirs(
+    results_root: str,
+    *,
+    assignments_filename: str = QUERY_TAX_ASSIGNMENTS_TXT,
+    sort: bool = True,
+) -> list[str]:
+    """List assignment leaf directories under *results_root* for novel/CV evaluation.
+
+    Walks the same pattern as ``assignment_result_leaf_glob`` and keeps only
+    directories that contain *assignments_filename* (defaults to
+    ``QUERY_TAX_ASSIGNMENTS_TXT``). This excludes trad-CV **fit** outputs under
+    ``<db>/<db>/<method>/<fit-id>/``, which share the same depth but have no
+    exported query assignments.
+
+    Parameters
+    ----------
+    results_root
+        Root passed to ``parameter_sweep`` / ``trad_cv_naive_bayes_commands_single_classifier``
+        (or ``precomputed_results_dir`` after ``move_results_to_repository``).
+    assignments_filename
+        Basename of the observed taxonomy file (same default as ``QUERY_TAX_ASSIGNMENTS_TXT``).
+    sort
+        If ``True``, return lexically sorted paths.
+
+    Returns
+    -------
+    list of str
+        Paths suitable for ``novel_taxa_classification_evaluation(..., results_dirs=…)``.
+    """
+    root = Path(results_root)
+    leaves: list[str] = []
+    for p in root.glob("*/*/*/*"):
+        if p.is_dir() and (p / assignments_filename).is_file():
+            leaves.append(str(p))
+    if sort:
+        leaves.sort()
+    return leaves
 
 
 def parse_taxonomy_map_path_to_dataset_id(taxonomy_map_fp: str) -> str:

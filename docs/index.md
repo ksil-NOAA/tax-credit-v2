@@ -1,6 +1,6 @@
 # tax-credit documentation
 
-**TAX CREdiT** (TAXonomic ClassifieR Evaluation Tool) is a standardized, extensible framework for comparing taxonomic classifiers on mock communities, cross-validated reference data, and novel-taxa simulations.
+**TAX CREdiT** (TAXonomic ClassifieR Evaluation Tool) is a standardized, extensible framework for comparing taxonomic classifiers on mock communities, cross-validated reference data (taxonomy-stratified or traditional random folds), and novel-taxa simulations.
 
 ## Guides
 
