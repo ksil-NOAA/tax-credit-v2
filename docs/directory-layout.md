@@ -43,6 +43,7 @@ Under the data directory, simulation roots use names exposed in `simulation_name
 | `DIR_CROSS_VALIDATED` | `cross-validated/` | **`cross-validated-taxa`** folds — stratified CV; per-fold `ref_seqs.fasta` / `ref_taxa.tsv` exclude query IDs. |
 | `DIR_CROSS_VALIDATED_TRAD` | `cross-validated-trad/` | **`cross-validated-trad`** folds — random KFold; `query.fasta` / `query_taxa.tsv` are the test split only; `ref_seqs.fasta` and `ref_taxa.tsv` are **symlinks** to the full simulated-reads FASTA and cleaned taxonomy under `ref_dbs/`. |
 | `DIR_NOVEL_TAXA_SIMULATIONS` | `novel-taxa-simulations/` | **Novel-taxa** derived datasets (from CV-taxa folds). |
+| `DIR_SELF_VALIDATED` | `self-validated/` | **Self-validated** datasets — one directory per reference database; query and reference both contain every sequence (no CV folds). |
 | `DIR_REF_DBS` | `ref_dbs/` | Per–reference-id cleaned FASTA, taxonomy, extracted simulated reads, and (for trad) shared QIIME artifacts: `_trad_cv_shared_ref_seqs.qza`, `_trad_cv_shared_ref_taxa.qza`. |
 
 `generate_simulated_datasets(..., simulation_method=...)` controls which of these trees are written. By default it builds **all** three simulation types. Requesting **`novel-taxa`** without **`cross-validated-taxa`** still runs the CV-taxa generator internally to feed novel-taxa construction, then removes the temporary fold directories (see `framework_functions` source).

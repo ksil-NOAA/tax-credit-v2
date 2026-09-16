@@ -39,6 +39,7 @@ import pandas as pd
 from sklearn.model_selection import KFold, StratifiedKFold
 
 from tax_credit.taxa_manipulator import (accept_list_or_file,
+                                         normalize_taxon,
                                          import_to_list,
                                          import_taxonomy_to_dict,
                                          export_list_to_file,
@@ -69,6 +70,7 @@ from tax_credit.simulation_names import (
     parse_cv_dataset_id,
     parse_novel_dataset_id,
     ref_dbs_root,
+    self_validated_root,
 )
 
 
@@ -502,6 +504,120 @@ def generate_simulated_datasets(dataframe, data_dir, iterations,
         rmtree(novel_cv_tmp_dir)
 
 
+def generate_self_validated_datasets(dataframe, data_dir, read_length=None,
+                                     force=False, min_read_length=80,
+                                     trim_primers=True, truncate=True):
+    '''Build self-validation datasets: classify every reference sequence
+    against the full database.
+
+    Unlike cross-validated methods, no sequences are removed from the
+    reference and there are no CV folds — one dataset per reference database.
+    '''
+    if truncate and read_length is None:
+        raise ValueError(
+            'read_length is required when truncate=True; use truncate=False '
+            'if you do not need a truncation length.')
+
+    sv_dir = self_validated_root(data_dir)
+
+    for index, data in dataframe.iterrows():
+        db_dir = join(ref_dbs_root(data_dir), data['Reference id'])
+        if not exists(db_dir):
+            makedirs(db_dir)
+
+        clean_fasta = join(db_dir, '{0}_clean.fasta'.format(
+            basename(splitext(data['Reference file path'])[0])))
+        clean_taxa = join(db_dir, '{0}_clean.tsv'.format(
+            basename(splitext(data['Reference tax path'])[0])))
+        if not exists(clean_fasta) or force:
+            clean_taxa, clean_fasta = clean_database(
+                data['Reference tax path'], data['Reference file path'], db_dir)
+
+        simulated_reads_fp = simulated_reads_filepath(
+            clean_fasta, data['Fwd primer id'], data['Rev primer id'],
+            min_read_length=min_read_length, trim_primers=trim_primers,
+            truncate=truncate)
+        if not exists(simulated_reads_fp) or force:
+            with open(simulated_reads_fp, 'w') as simulated_reads:
+                if trim_primers:
+                    seqs = Artifact.import_data(
+                        'FeatureData[Sequence]', clean_fasta)
+                    trunc_len = read_length if truncate else 0
+                    trimmed = feature_classifier.methods.extract_reads(
+                        sequences=seqs, trunc_len=trunc_len,
+                        f_primer=data['Fwd primer'],
+                        r_primer=data['Rev primer']).reads
+                    for seq in trimmed.view(DNAIterator):
+                        if (min_read_length is None
+                                or len(seq) >= min_read_length):
+                            seq.write(simulated_reads, format='fasta')
+                else:
+                    for seq in io.read(clean_fasta, format='fasta'):
+                        out_seq = seq[:read_length] if truncate else seq
+                        if (min_read_length is None
+                                or len(out_seq) >= min_read_length):
+                            out_seq.write(simulated_reads, format='fasta')
+        else:
+            print('simulated reads and amplicons exist: skipping extraction')
+
+        print(index, 'Sequence Counts')
+        print('Raw Fasta:           ', seq_count(data['Reference file path']))
+        print('Clean Fasta:         ', seq_count(clean_fasta))
+        print('Simulated Reads:     ', seq_count(simulated_reads_fp))
+
+        db_sv_dir = join(sv_dir, index)
+        if not exists(db_sv_dir):
+            makedirs(db_sv_dir)
+
+        query_taxa_fp = join(db_sv_dir, QUERY_TAXA_TSV)
+        query_fp = join(db_sv_dir, QUERY_FASTA)
+        ref_fp = join(db_sv_dir, REF_SEQS_FASTA)
+        ref_taxa_fp = join(db_sv_dir, REF_TAXA_TSV)
+
+        if force or not exists(query_taxa_fp):
+            simulated_reads = list(io.read(simulated_reads_fp, format='fasta'))
+            taxonomy = Artifact.import_data(
+                'FeatureData[Taxonomy]', clean_taxa,
+                view_type='HeaderlessTSVTaxonomyFormat')
+            taxonomy_series = taxonomy.view(pd.Series)
+            seq_ids = [seq.metadata['id'] for seq in simulated_reads]
+            all_list = [
+                '\t'.join([sid, str(taxonomy_series.loc[sid]).strip()])
+                for sid in sorted(seq_ids)]
+            export_list_to_file(all_list, query_taxa_fp)
+
+            with open(query_fp, 'w') as query_fasta:
+                for seq in simulated_reads:
+                    seq.write(query_fasta, format='fasta')
+
+            ref_reads_abs = abspath(simulated_reads_fp)
+            ref_taxa_abs = abspath(clean_taxa)
+            _replace_symlink(ref_fp, ref_reads_abs)
+            _replace_symlink(ref_taxa_fp, ref_taxa_abs)
+
+            shared_ref_seqs_qza = join(db_dir, '_trad_cv_shared_ref_seqs.qza')
+            shared_ref_taxa_qza = join(db_dir, '_trad_cv_shared_ref_taxa.qza')
+            if force or not exists(shared_ref_seqs_qza):
+                if exists(shared_ref_seqs_qza):
+                    remove(shared_ref_seqs_qza)
+                artifact = Artifact.import_data(
+                    'FeatureData[Sequence]', simulated_reads_fp)
+                artifact.save(shared_ref_seqs_qza)
+            if force or not exists(shared_ref_taxa_qza):
+                if exists(shared_ref_taxa_qza):
+                    remove(shared_ref_taxa_qza)
+                artifact = Artifact.import_data(
+                    'FeatureData[Taxonomy]', clean_taxa,
+                    view_type='HeaderlessTSVTaxonomyFormat')
+                artifact.save(shared_ref_taxa_qza)
+
+            _replace_symlink(ref_fp[:-5] + 'qza', shared_ref_seqs_qza)
+            _replace_symlink(ref_taxa_fp[:-3] + 'qza', shared_ref_taxa_qza)
+
+            artifact = Artifact.import_data('FeatureData[Sequence]', query_fp)
+            artifact.save(query_fp[:-5] + 'qza')
+
+
 def generate_novel_sequence_sets(cv_dir, novel_dir,
                                  levelrange=range(6, 0, -1)):
     '''Generate paired query/reference fastas and taxonomies for novel taxa
@@ -844,6 +960,21 @@ def recall_simulated_taxa_dirs(data_dir, databases, iterations,
     return dataset_reference_combinations, reference_dbs
 
 
+def recall_self_validated_dirs(data_dir, databases,
+                               ref_seqs=REF_SEQS_FASTA, ref_taxa=REF_TAXA_TSV):
+    '''Build sweep inputs for self-validated datasets (one per reference DB).
+
+    Returns the same tuple shape as :func:`recall_simulated_taxa_dirs`.
+    '''
+    dataset_reference_combinations = list()
+    reference_dbs = dict()
+    for database in databases:
+        dataset_reference_combinations.append((database, database))
+        reference_dbs[database] = (join(data_dir, database, ref_seqs),
+                                   join(data_dir, database, ref_taxa))
+    return dataset_reference_combinations, reference_dbs
+
+
 def trad_cv_shared_reference_qzas(data_dir, reference_id):
     '''Absolute paths to the shared QIIME artifacts for ``cross-validated-trad``.
 
@@ -1075,16 +1206,22 @@ def find_last_common_ancestor(taxon_a, taxon_b):
 def evaluate_classification(obs_taxon, exp_taxon):
     '''Given an observed and actual taxonomy string corresponding to a cross-
     validated simulated community, score as match, overclassification,
-    underclassification, or misclassification'''
-    # KS edits, strip NAs
-    obs_taxon = obs_taxon.replace(';NA', '')
-    exp_taxon = exp_taxon.replace(';NA', '')
+    underclassification, or misclassification.
+
+    Trailing 'NA' / empty ranks count as unassigned and are ignored; internal
+    'NA' ranks are kept so ranks are compared position by position.'''
+    obs_taxon = normalize_taxon(obs_taxon)
+    exp_taxon = normalize_taxon(exp_taxon)
     if obs_taxon == exp_taxon:
         return 'match'
-    if exp_taxon.startswith(obs_taxon) or \
-            obs_taxon in ('Unclassified', 'Unassigned', 'No blast hit'):
+    if obs_taxon in ('', 'Unclassified', 'Unassigned', 'No blast hit'):
         return 'underclassification'
-    if obs_taxon.startswith(exp_taxon):
+    obs_ranks = obs_taxon.split(';')
+    exp_ranks = exp_taxon.split(';')
+    # compare whole ranks, so 'A;Lut' is not a prefix of 'A;Lutjanus'
+    if exp_ranks[:len(obs_ranks)] == obs_ranks:
+        return 'underclassification'
+    if obs_ranks[:len(exp_ranks)] == exp_ranks:
         return 'overclassification'
     return 'misclassification'
 
@@ -1169,7 +1306,8 @@ def compute_prf(exp, obs, test_type='cross-validated',
         Score averaging method using in sklearn. 'micro', 'weighted', or
         'macro'.
     test_type: str
-        'novel-taxa', 'cross-validated', or 'cross-validated-trad'.
+        'novel-taxa', 'cross-validated', 'cross-validated-trad', or
+        'self-validated'.
     l_range: range
         Range of taxonomic levels for ``cross-validated`` and
         ``cross-validated-trad``.
@@ -1180,7 +1318,8 @@ def compute_prf(exp, obs, test_type='cross-validated',
     if test_type in ('mock', 'novel-taxa'):
         p, r, f = precision_recall_fscore(
             exp, obs, sample_weight=sample_weight, exclude=exclude)
-    elif test_type in ('cross-validated', 'cross-validated-trad'):
+    elif test_type in ('cross-validated', 'cross-validated-trad',
+                       'self-validated'):
         # initialize p/r/f as lists of 0s, representing each taxonomic level.
         p, r, f = [0] * 7, [0] * 7, [0] * 7
         # iterate over multiple taxonomic levels
@@ -1192,7 +1331,7 @@ def compute_prf(exp, obs, test_type='cross-validated',
     else:
         raise ValueError(
             'test_type must be "novel-taxa", "cross-validated", '
-            '"cross-validated-trad", or "mock".')
+            '"cross-validated-trad", "self-validated", or "mock".')
 
     return p, r, f
 

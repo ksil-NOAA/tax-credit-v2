@@ -22,6 +22,7 @@ _NOVEL_DATASET_ID_RE = re.compile(r"^(.*)-L(\d+)-iter(\d+)$")
 DIR_CROSS_VALIDATED = "cross-validated"
 DIR_CROSS_VALIDATED_TRAD = "cross-validated-trad"
 DIR_NOVEL_TAXA_SIMULATIONS = "novel-taxa-simulations"
+DIR_SELF_VALIDATED = "self-validated"
 DIR_REF_DBS = "ref_dbs"
 
 # --- Glob fragments for discovering fold directories -----------------------
@@ -44,6 +45,13 @@ class CrossValidatedDatasetParts(NamedTuple):
     iteration: str
 
 
+class SelfValidatedDatasetParts(NamedTuple):
+    """Parsed self-validated dataset id (reference database name only)."""
+
+    database: str
+    iteration: str
+
+
 def cross_validated_root(data_dir: str) -> str:
     return join(data_dir, DIR_CROSS_VALIDATED)
 
@@ -54,6 +62,10 @@ def cross_validated_trad_root(data_dir: str) -> str:
 
 def novel_taxa_simulations_root(data_dir: str) -> str:
     return join(data_dir, DIR_NOVEL_TAXA_SIMULATIONS)
+
+
+def self_validated_root(data_dir: str) -> str:
+    return join(data_dir, DIR_SELF_VALIDATED)
 
 
 def ref_dbs_root(data_dir: str) -> str:
@@ -99,3 +111,14 @@ def parse_novel_dataset_id(dataset_id: str) -> NovelDatasetParts:
 def parse_cv_dataset_id(dataset_id: str) -> CrossValidatedDatasetParts:
     """Parse a cross-validated *dataset_id* (``<db>-iter<n>``)."""
     return parse_cv_fold_dirname(dataset_id)
+
+
+def parse_self_validated_dataset_id(dataset_id: str) -> SelfValidatedDatasetParts:
+    """Parse a self-validated *dataset_id* (the reference database name)."""
+    if "-iter" in dataset_id:
+        raise ValueError(
+            "Self-validated dataset_id must not contain '-iter'; got {!r}".format(
+                dataset_id
+            )
+        )
+    return SelfValidatedDatasetParts(dataset_id, "0")

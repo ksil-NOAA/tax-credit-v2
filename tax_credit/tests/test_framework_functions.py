@@ -19,6 +19,7 @@ import pandas as pd
 from tempfile import mkdtemp
 from tax_credit.framework_functions import (
     generate_simulated_datasets,
+    evaluate_classification,
     find_last_common_ancestor,
     novel_taxa_classification_evaluation,
     extract_per_level_accuracy,
@@ -301,8 +302,9 @@ class EvalFrameworkTests(TestCase):
             clean_taxa_path = join(
                 ref_dbs_root(tmp), 'ref1', 'query_taxa_clean.tsv')
             expected = import_taxonomy_to_dict(clean_taxa_path)
-            sim_reads = join(
-                ref_dbs_root(tmp), 'ref1', 'ref1_515f-806r_trunc.fasta')
+            sim_reads = simulated_reads_filepath(
+                join(ref_dbs_root(tmp), 'ref1', 'ref1_clean.fasta'),
+                '515f', '806r', trim_primers=False)
             for i in range(2):
                 fold = join(trad, 'B1-REF-iter{}'.format(i))
                 qt = import_taxonomy_to_dict(join(fold, QUERY_TAXA_TSV))
@@ -413,6 +415,41 @@ class EvalFrameworkTests(TestCase):
         t2 = extract_taxa_names(taxa2, level=slice(None), field=1)
         for i, n in zip(range(8), [7, 6, 5, 4, 7, 3, 6, 6]):
             self.assertEqual(find_last_common_ancestor(t2[i], t1[i]), n)
+
+    def test_evaluate_classification_na_ranks(self):
+        exp = ('Eukaryota;Chordata;Actinopteri;NA;Lutjanidae;Lutjanus;'
+               'Lutjanus griseus')
+        self.assertEqual(evaluate_classification(exp, exp), 'match')
+        self.assertEqual(
+            evaluate_classification('Eukaryota;Chordata;Actinopteri', exp),
+            'underclassification')
+        # the internal NA rank must line up, not be skipped
+        self.assertEqual(
+            evaluate_classification(
+                'Eukaryota;Chordata;Actinopteri;Lutjanidae;Lutjanus;'
+                'Lutjanus griseus', exp),
+            'misclassification')
+        # an internal gap is not a truncation
+        self.assertEqual(
+            evaluate_classification(
+                'Eukaryota;Chordata;Actinopteri;;Lutjanidae', exp),
+            'misclassification')
+        self.assertEqual(evaluate_classification('Unassigned', exp),
+                         'underclassification')
+
+    def test_evaluate_classification_trailing_na_and_empty_ranks(self):
+        self.assertEqual(
+            evaluate_classification('A;B;C;D;E;F;NA', 'A;B;C;D;E;F'), 'match')
+        self.assertEqual(
+            evaluate_classification('A;B;C;D;E;;', 'A;B;C;D;E;F;G'),
+            'underclassification')
+        self.assertEqual(
+            evaluate_classification('A;B;C;D;E;F;G', 'A;B;C;D;E;F;NA'),
+            'overclassification')
+        # ranks are compared whole, not as string prefixes
+        self.assertEqual(
+            evaluate_classification('A;B;C;D;E;Lut', 'A;B;C;D;E;Lutjanus'),
+            'misclassification')
 
     def test_novel_taxa_classification_evaluation(self):
         # test novel taxa evaluation

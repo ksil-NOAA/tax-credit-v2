@@ -136,6 +136,22 @@ def string_search(infile, pattern, discard=False, field=slice(None),
     return keep_list
 
 
+# strip trailing unassigned ranks from a taxonomy string
+def normalize_taxon(taxon, delim=';'):
+    '''Remove trailing 'NA' or empty ranks from a taxonomy string.
+
+    Internal 'NA' ranks are kept so every rank stays at its position:
+    'A;B;C;NA;E;F;NA' -> 'A;B;C;NA;E;F'. A string with no assigned ranks
+    (e.g. 'NA' or ';;') becomes ''.
+
+    str -> str
+    '''
+    ranks = taxon.split(delim)
+    while ranks and ranks[-1].strip() in ('NA', ''):
+        ranks.pop()
+    return delim.join(ranks)
+
+
 # generate expected taxonomy files for novel taxa
 def trim_taxonomy_strings(infile, level, delim=';'):
     '''Generate expected taxonomy strings for 'novel taxa'

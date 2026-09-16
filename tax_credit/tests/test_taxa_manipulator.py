@@ -23,7 +23,8 @@ from tax_credit.taxa_manipulator import (string_search,
                                          extract_fasta_ids,
                                          filter_sequences,
                                          stratify_taxonomy_subsets,
-                                         accept_list_or_file)
+                                         accept_list_or_file,
+                                         normalize_taxon)
 
 
 class EvalFrameworkTests(TestCase):
@@ -103,6 +104,22 @@ class EvalFrameworkTests(TestCase):
             [self.op11], level=6), [self.op11])
         self.assertEqual(trim_taxonomy_strings(
             [self.op11], level=0), ['203525\tk__Bacteria'])
+
+    def test_normalize_taxon(self):
+        na_taxon = ('Eukaryota;Chordata;Actinopteri;NA;Lutjanidae;Lutjanus;'
+                    'Lutjanus griseus')
+        # internal NA ranks keep their position
+        self.assertEqual(normalize_taxon(na_taxon), na_taxon)
+        # trailing NA and empty ranks are removed
+        self.assertEqual(normalize_taxon('A;B;C;NA;E;F;NA'), 'A;B;C;NA;E;F')
+        self.assertEqual(normalize_taxon('A;B;C;D;E;NA;NA'), 'A;B;C;D;E')
+        self.assertEqual(normalize_taxon('A;B;C;D;E;;'), 'A;B;C;D;E')
+        self.assertEqual(normalize_taxon('A;B;C; NA'), 'A;B;C')
+        self.assertEqual(normalize_taxon('NA'), '')
+        self.assertEqual(normalize_taxon(';;'), '')
+        self.assertEqual(normalize_taxon('Unassigned'), 'Unassigned')
+        # names that only start with NA are not ranks to strip
+        self.assertEqual(normalize_taxon('A;B;NAxx'), 'A;B;NAxx')
 
     def test_branching_taxa(self):
         self.assertEqual(branching_taxa(self.table1, field=6), [])

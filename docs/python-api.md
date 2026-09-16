@@ -95,7 +95,7 @@ Lower-level: given an explicit list of result tuples and an expected-path lookup
 
 ## `tax_credit.novel_evaluation`
 
-Text-based assignment evaluation for **novel-taxa**, **cross-validated**, and **cross-validated-trad** layouts (not BIOM composition tables). Uses `framework_functions.load_prf`, `compute_prf`, `evaluate_classification`, `find_last_common_ancestor`, and `paths.QUERY_*` filenames.
+Text-based assignment evaluation for **novel-taxa**, **cross-validated**, **cross-validated-trad**, and **self-validated** layouts (not BIOM composition tables). Uses `framework_functions.load_prf`, `compute_prf`, `evaluate_classification`, `find_last_common_ancestor`, and `paths.QUERY_*` filenames.
 
 ### `novel_taxa_classification_evaluation(results_dirs, expected_results_dir, summary_fp, test_type='novel-taxa')`
 
@@ -104,7 +104,7 @@ Text-based assignment evaluation for **novel-taxa**, **cross-validated**, and **
 | `results_dirs` | iterable of `str` | Each path must end with `dataset_id/method_id/params_id` (`parse_assignment_results_dir`). Must contain `query_tax_assignments.txt`. Build with `paths.list_assignment_result_dirs(results_root)` when outputs use the standard four-level sweep tree. |
 | `expected_results_dir` | `str` | Must contain `join(expected_results_dir, dataset_id, query_taxa.tsv)` for each dataset. |
 | `summary_fp` | `str` | Where to write the summary CSV (pandas default comma separator). |
-| `test_type` | `str` | `'novel-taxa'`, `'cross-validated'`, or `'cross-validated-trad'`. Selects how `dataset_id` is parsed (`parse_novel_dataset_id` vs `parse_cv_dataset_id`). Other values raise `ValueError`. |
+| `test_type` | `str` | `'novel-taxa'`, `'cross-validated'`, `'cross-validated-trad'`, or `'self-validated'`. Selects how `dataset_id` is parsed (`parse_novel_dataset_id`, `parse_cv_dataset_id`, or `parse_self_validated_dataset_id`). Other values raise `ValueError`. |
 
 **Per directory:** writes `classification_accuracy_log.tsv` under that results dir (`CLASSIFICATION_ACCURACY_LOG_TSV`), appends one summary row, returns the full `DataFrame`.
 
@@ -123,7 +123,15 @@ Expands summary rows into **per-level** rows for plotting (levels `1..6` in the 
 | `df` | `DataFrame` | (required) | Typically the return value of `novel_taxa_classification_evaluation`. |
 | `columns` | `list` | `['Precision','Recall','F-measure','mismatch_level_list']` | Which columns to expand; `mismatch_level_list` is converted from string form if needed. |
 
-**Returns:** `DataFrame` with columns `Dataset`, `level`, `iteration`, `Method`, `Parameters`, plus derived metric columns (e.g. `match_ratio` when `mismatch_level_list` is processed).
+**Returns:** `DataFrame` with columns `Dataset`, `level`, `iteration`, `Method`, `Parameters`, plus derived metric columns. When `mismatch_level_list` is listed, `match_ratio` is added and equals `Recall` at that level.
+
+### `extract_per_level_classification_ratios_by_fold(results_dirs)` / `extract_per_level_classification_ratios(results_dirs)`
+
+Recompute match / over- / under- / misclassification ratios at levels `1..6` (phylum..species) from each results directory's `classification_accuracy_log.tsv`. The `_by_fold` form returns one row per directory and level with `Dataset`, `novel_level` (novel-taxa simulation level, `<NA>` otherwise), `iteration`, `Method`, `Parameters`, `level` and the four ratios. The other form averages across iterations, grouped by `Dataset`, `novel_level`, `Method`, `Parameters` and `level`.
+
+### `select_best_runs(df, metrics, group_cols=("Dataset",), run_cols=("Method", "Parameters"), tolerance=1e-9)`
+
+For each group and metric, returns the run (method + parameters) with the best mean score across its rows. Metrics in `LOWER_IS_BETTER_METRICS` (mis-, over- and underclassification ratio) are minimised; all others are maximised. Ties within `tolerance` go to the first run sorted by `run_cols`. Output columns: the group columns, `metric`, `direction`, the run columns, `value`, `n_folds`, `n_tied`. Filter `df` to a single level first.
 
 ---
 
@@ -187,6 +195,14 @@ Simulation and sweep entry points (e.g. `generate_simulated_datasets`, `paramete
 
 Builds ``(dataset_reference_combinations, reference_dbs)`` for taxonomy-assignment parameter sweeps: fold directory names under ``data_dir`` (novel-taxa ``<db>-L<level>-iter<n>`` when ``multilevel=True``, or cross-validated ``<db>-iter<n>`` when ``multilevel=False``) mapped to ``ref_seqs`` / ``ref_taxa`` paths. Pass the appropriate root (e.g. ``novel_taxa_simulations_root(data_dir)`` or ``cross_validated_root(data_dir)``) as the first argument so paths resolve to the simulated tree you generated.
 
+### `recall_self_validated_dirs(data_dir, databases, ref_seqs=..., ref_taxa=...)`
+
+Same return shape as ``recall_simulated_taxa_dirs``, but for **self-validated** datasets: one ``(database, database)`` pair per reference database under ``self_validated_root(data_dir)`` (no CV fold iterations).
+
+### `generate_self_validated_datasets(dataframe, data_dir, ...)`
+
+Builds one self-validation dataset per reference database: every sequence is classified against the full database (no held-out folds, no ID removal from the reference). Writes under ``self-validated/<database>/``.
+
 ### `trad_cv_shared_reference_qzas(project_data_dir, reference_id)`
 
 Returns ``(ref_seqs_qza, ref_taxa_qza)`` paths under ``ref_dbs/<reference_id>/`` for **cross-validated-trad** shared training artifacts (``_trad_cv_shared_ref_seqs.qza``, ``_trad_cv_shared_ref_taxa.qza``).
@@ -248,9 +264,35 @@ See [directory-layout.md](directory-layout.md).
 
 ---
 
+## `tax_credit.plot_theme`
+
+Shared plot style. `apply_tax_credit_theme()` sets fonts (Arial, falling back to DejaVu Sans), editable TrueType PDF text, `constrained_layout`, and trimmed axes; every plotting function below calls it. Also provides `METHOD_COLORS` / `method_palette(methods, override=None)` (a fixed Okabe-Ito colour per classify method), `CLASSIFICATION_RATIO_COLORS` and `RATIO_STACK_ORDER`, `metric_cmap(metric)` (`mako_r` for scores, `rocket_r` for error ratios), `metric_limits(values)` (0-1 unless every value is within 0.25 of 0 or 1, then zoomed; returns `(low, high, zoomed)`), and `metric_label` / `eval_method_label` / `ratio_label` for readable names.
+
 ## `tax_credit.plotting_functions`
 
-Seaborn/matplotlib helpers for notebooks (boxplots, heatmaps, PCoA, etc.). Import only in analysis contexts; dependencies match the QIIME amplicon environment described in [installation.md](installation.md).
+Seaborn/matplotlib helpers (boxplots, heatmaps, PCoA, etc.); dependencies match the QIIME amplicon environment described in [installation.md](installation.md). Every plotting function returns a matplotlib `Figure` and never calls `plt.show()`.
+
+Evaluation metric plots used by the Tourmaline tax-credit step:
+
+| Function | Draws |
+|----------|-------|
+| `pointplot_from_data_frame(df, x, metric, hue="Method", col="Dataset", x_order=None, col_order=None, palette=None, x_label=None, title=None)` | Mean metric per `x`, one line per `hue`, one panel per `col`; error bars span min-max. |
+| `faceted_boxplot_from_data_frame(df, x, metric, hue="Method", col=None, col_order=None, palette=None, title=None)` | Boxplots with each row drawn as a point, one panel per `col`. |
+| `heatmap_from_data_frame(df, metric, rows=("Method", "Parameters"), cols=("Dataset",), cmap=None, vmin=None, vmax=None, annotate=None, title=None)` | Mean metric per row/column group; colour map and limits default from the metric; values printed for 120 cells or fewer. |
+| `stacked_classification_barplot_from_data_frame(df, run_cols=("Method", "Parameters"), col="Dataset", level_col="level", level_labels=None, level_axis_label=..., title=None)` | Classification ratios by level; one row per run, one column per dataset. |
+| `stacked_classification_panels_from_data_frames(panels, ncols, ..., row_labels=None, col_titles=None, panel_size=(2.6, 2.6), title=None)` | Grid of `(title, df)` panels, each one run's ratios by level. |
+
+`tax_credit.log_plotting.method_parameter_sensitivity_heatmap_from_data_frame(pivot_df, title=None, value_label=..., annotate_max_cells=120)` draws one heatmap panel per dataset from a `(dataset, expected_taxonomy)`-indexed pivot, keeping its row order; hatched cells have no data. Rank rows first with `log_analysis.select_top_sensitivity_taxa(pivot_df, top_n)`, which keeps the `top_n` worst taxa per dataset.
+
+**API changes (notebooks in `ipynb/` not yet updated):**
+
+- `show=` removed from every plotting function; figures are returned instead. Call `plt.show()` or display the figure in notebooks.
+- `pointplot_from_data_frame` takes one `metric` (was a `y_vars` list), uses `x` / `hue` / `col` (were `x_axis` / `color_by` / `group_by`) and returns a `Figure` (was a dict of `FacetGrid`s).
+- `heatmap_from_data_frame`, `boxplot_from_data_frame` and `method_parameter_sensitivity_heatmap_from_data_frame` return a `Figure` (were `Axes`). `boxplot_from_data_frame` no longer fixes the y axis to 0-1 by default.
+- `faceted_boxplot_from_data_frame` returns a `Figure` (was a `FacetGrid`) and takes `palette` (was `color_palette`).
+- `stacked_classification_barplot_from_data_frame` draws a grid of runs x datasets (was one axis of nested clusters) and returns a `Figure`.
+- `select_top_sensitivity_taxa` keeps `top_n` taxa per dataset (was across all datasets) in ranked order.
+- Removed: `lmplot_from_data_frame` (did not run on seaborn 0.12) and `DEFAULT_CLASSIFICATION_RATIO_COLORS` (use `plot_theme.CLASSIFICATION_RATIO_COLORS`).
 
 ---
 
