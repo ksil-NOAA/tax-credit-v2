@@ -327,11 +327,12 @@ def extract_per_level_classification_ratios(results_dirs):
     )[CLASSIFICATION_RATIO_COLS].mean()
 
 
-# Error ratios, where the best run has the lowest value.
+# Error ratios and dissimilarities, where the best run has the lowest value.
 LOWER_IS_BETTER_METRICS = frozenset({
     "misclassification_ratio",
     "overclassification_ratio",
     "underclassification_ratio",
+    "Bray-Curtis",
 })
 
 

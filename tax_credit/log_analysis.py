@@ -20,7 +20,7 @@ from tax_credit.paths import (
     CLASSIFICATION_ACCURACY_LOG_TSV,
     parse_assignment_results_dir,
 )
-from tax_credit.taxa_manipulator import normalize_taxon
+from tax_credit.taxa_manipulator import is_unassigned_taxon, normalize_taxon
 
 # Rank names by taxonomy depth index (0 = kingdom ... 6 = species).
 RANK_NAMES = ("kingdom", "phylum", "class", "order", "family", "genus", "species")
@@ -52,10 +52,9 @@ def _truncate_taxonomy_at_level(taxon: str, level: int) -> str:
 
 def taxonomy_depth(taxon: str) -> int:
     """Number of assigned ranks, counting internal NA ranks but not trailing ones."""
-    if not taxon or taxon.strip() in ("Unassigned", "Unclassified", "No blast hit"):
+    if is_unassigned_taxon(taxon):
         return 0
-    normalized = normalize_taxon(taxon)
-    return len(normalized.split(";")) if normalized else 0
+    return len(normalize_taxon(taxon).split(";"))
 
 
 def expected_rank_name(taxon: str) -> str:

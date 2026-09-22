@@ -45,7 +45,11 @@ from tax_credit.taxa_manipulator import (accept_list_or_file,
                                          export_list_to_file,
                                          filter_sequences,
                                          string_search,
+                                         drop_unassigned_taxonomies,
+                                         strip_taxonomy_header,
+                                         is_unassigned_taxon,
                                          trim_taxonomy_strings,
+                                         truncate_taxa_to_reference,
                                          extract_taxa_names)
 from qiime2 import Artifact
 from qiime2.plugins import feature_classifier
@@ -185,6 +189,19 @@ def clean_database(taxa_in, seqs_in, db_dir,
     junk: str
         '|'-separated list of search terms. Taxonomies containing these terms
         will be removed from the database.
+
+    A leading 'Feature ID<tab>Taxon' header row is dropped if present, so
+    databases that ship with one and databases that do not both clean the same
+    way.
+
+    The junk patterns are written for Greengenes-style prefixed ranks
+    ('k__Bacteria;p__;c__'), so they do not match databases that spell an
+    unresolved rank 'NA'. Records whose every rank is 'NA' or blank are
+    therefore dropped separately, by taxonomy content rather than by pattern:
+    they place a sequence nowhere, but still get scored against whatever a
+    classifier returns for them (a non-call scores as a match, any real call as
+    a misclassification), which is noise in both directions. Lineages that are
+    merely unresolved at the tip ('...;Gadus;NA') are kept.
     '''
 
     clean_taxa = join(
@@ -192,8 +209,12 @@ def clean_database(taxa_in, seqs_in, db_dir,
     clean_fasta = join(
         db_dir, '{0}_clean.fasta'.format(basename(splitext(seqs_in)[0])))
 
+    # Drop a 'Feature ID<tab>Taxon' header row, if this database has one
+    taxa = strip_taxonomy_header(taxa_in)
     # Remove empty taxa from ref taxonomy
-    taxa = string_search(taxa_in, junk, discard=True)
+    taxa = string_search(taxa, junk, discard=True)
+    # Remove records with no assigned rank ('NA;NA;...', '', 'Unassigned')
+    taxa = drop_unassigned_taxonomies(taxa)
     # Remove brackets (and other special characters causing problems)
     clean_list = [line.translate(str.maketrans('', '', '[]()'))
                   for line in taxa]
@@ -663,7 +684,32 @@ def generate_novel_sequence_sets(cv_dir, novel_dir,
             separated = defaultdict(list)
             for s in query_taxa:
                 separated[s.count(';')].append(s)
-            export_list_to_file(separated[max(separated)], query_taxa_fp)
+            query_taxa = separated[max(separated)]
+
+            # Removing the query taxon can remove its parent as well (a
+            # monotypic genus goes with its only species). A rank the reference
+            # no longer holds cannot be returned by any classifier, so cut each
+            # expected taxonomy back to its deepest rank still in this fold's
+            # reference; queries with no rank left are dropped.
+            truncated = truncate_taxa_to_reference(query_taxa, ref_taxa_fp)
+            before = dict(
+                line.split('\t', 1) for line in query_taxa if '\t' in line)
+            after = dict(
+                line.split('\t', 1) for line in truncated if '\t' in line)
+            n_trimmed = sum(
+                1 for sid, taxon in after.items() if before.get(sid) != taxon)
+            n_dropped = len(before) - len(after)
+            if n_trimmed or n_dropped:
+                message = (
+                    '{0}: expected taxonomy truncated to the reference for {1} '
+                    'of {2} queries'.format(
+                        basename(novel_fold_dir), n_trimmed, len(before)))
+                if n_dropped:
+                    message += (
+                        '; {0} dropped (no rank left in reference)'.format(
+                            n_dropped))
+                print(message)
+            export_list_to_file(truncated, query_taxa_fp)
 
             # Create REF: Filter ref database to contain only seqs that
             #    match non-matching taxonomy strings
@@ -1214,7 +1260,7 @@ def evaluate_classification(obs_taxon, exp_taxon):
     exp_taxon = normalize_taxon(exp_taxon)
     if obs_taxon == exp_taxon:
         return 'match'
-    if obs_taxon in ('', 'Unclassified', 'Unassigned', 'No blast hit'):
+    if is_unassigned_taxon(obs_taxon):
         return 'underclassification'
     obs_ranks = obs_taxon.split(';')
     exp_ranks = exp_taxon.split(';')

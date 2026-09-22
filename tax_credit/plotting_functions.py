@@ -314,6 +314,101 @@ def stacked_classification_barplot_from_data_frame(
     )
 
 
+def _short_taxon_label(taxon, resolved):
+    """Last named rank of a lineage, marked when not resolved at the plotted rank."""
+    names = [name for name in str(taxon).split(";") if name and name != "NA"]
+    name = names[-1] if names else str(taxon)
+    return name if resolved else f"{name} (unresolved)"
+
+
+def composition_barplot_from_data_frame(df, run_order, sample_col="SampleID",
+                                        run_col="run", row_col=None,
+                                        taxon_col="taxon",
+                                        resolved_col="resolved",
+                                        value_col="abundance", top_n=12,
+                                        title=None):
+    """Stacked relative-abundance bars: one column per sample, one bar per run.
+
+    *df* has one row per sample, run and taxon. *run_order* lists the runs left
+    to right (e.g. ``Expected`` then one best run per method). With *row_col*
+    (e.g. the reference database) the figure gets one row of panels per value
+    of that column, and *run_order* may be a dict mapping each row value to its
+    own run list, since the best run differs per row.
+
+    Up to *top_n* taxa get their own colour, chosen across the whole figure so
+    every panel uses the same colours: first the taxa of the first run (by
+    abundance), then those with the highest abundance in any other bar. The
+    rest are pooled as ``Other``, and ``Unassigned`` is dark grey. Taxa are
+    labelled by their last named rank. Returns the figure.
+    """
+    from matplotlib.patches import Patch
+
+    apply_tax_credit_theme()
+    df = df.copy()
+    df["label"] = [
+        "Unassigned" if taxon == "Unassigned" else _short_taxon_label(taxon, res)
+        for taxon, res in zip(df[taxon_col], df[resolved_col])
+    ]
+    rows = list(dict.fromkeys(df[row_col])) if row_col else [None]
+    if isinstance(run_order, dict):
+        runs_by_row = {row: list(run_order.get(row, [])) for row in rows}
+    else:
+        runs_by_row = {row: list(run_order) for row in rows}
+    first_runs = [runs[0] for runs in runs_by_row.values() if runs]
+
+    first = (df[df[run_col].isin(first_runs)].groupby("label")[value_col]
+             .max().sort_values(ascending=False))
+    peak = df.groupby("label")[value_col].max().sort_values(ascending=False)
+    ordered = list(dict.fromkeys(list(first.index) + list(peak.index)))
+    named = [label for label in ordered if label != "Unassigned"][:top_n]
+    df.loc[~df["label"].isin(named + ["Unassigned"]), "label"] = "Other"
+    stack = named + [label for label in ("Other", "Unassigned")
+                     if label in set(df["label"])]
+    colors = dict(zip(named, sns.color_palette("tab20", max(len(named), 1))))
+    colors.update({"Other": "0.82", "Unassigned": "0.45"})
+
+    samples = list(dict.fromkeys(df[sample_col]))
+    widest = max((len(runs) for runs in runs_by_row.values()), default=1)
+    width = max(2.4, 0.45 * widest + 0.8)
+    fig, axes = plt.subplots(
+        len(rows), max(len(samples), 1),
+        figsize=(width * max(len(samples), 1) + 2.6, 3.4 * len(rows)),
+        sharey=True, squeeze=False,
+    )
+    for row_index, row in enumerate(rows):
+        row_df = df[df[row_col] == row] if row_col else df
+        runs = [run for run in runs_by_row[row] if run in set(row_df[run_col])]
+        for ax, sample in zip(axes[row_index], samples):
+            panel = row_df[row_df[sample_col] == sample]
+            pivot = (panel.pivot_table(index=run_col, columns="label",
+                                       values=value_col, aggfunc="sum")
+                     .reindex(index=runs, columns=stack).fillna(0.0))
+            x = np.arange(len(runs))
+            bottoms = np.zeros(len(runs))
+            for label in stack:
+                heights = pivot[label].to_numpy(dtype=float)
+                ax.bar(x, heights, 0.8, bottom=bottoms, color=colors[label],
+                       edgecolor="white", linewidth=0.3)
+                bottoms += heights
+            ax.set_xticks(x, runs)
+            _rotate_long_labels(ax, runs)
+            ax.set_ylim(0, 1)
+            if row_index == 0:
+                ax.set_title(str(sample), fontsize=9)
+        label = "relative abundance"
+        axes[row_index, 0].set_ylabel(
+            f"{row}\n{label}" if row_col else label)
+    fig.legend(
+        handles=[Patch(facecolor=colors[label], label=label)
+                 for label in reversed(stack)],
+        # centred, so a two-line suptitle has the top right corner to itself
+        loc="outside right", fontsize=7,
+    )
+    if title:
+        fig.suptitle(title)
+    return fig
+
+
 def boxplot_from_data_frame(df,
                             group_by="Method",
                             metric="Precision",

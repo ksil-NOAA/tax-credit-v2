@@ -19,6 +19,7 @@ import pandas as pd
 from tempfile import mkdtemp
 from tax_credit.framework_functions import (
     generate_simulated_datasets,
+    clean_database,
     evaluate_classification,
     find_last_common_ancestor,
     novel_taxa_classification_evaluation,
@@ -40,6 +41,7 @@ from tax_credit.simulation_names import (
 )
 from tax_credit.taxa_manipulator import (import_to_list,
                                          import_taxonomy_to_dict,
+                                         extract_fasta_ids,
                                          extract_taxa_names)
 
 
@@ -450,6 +452,34 @@ class EvalFrameworkTests(TestCase):
         self.assertEqual(
             evaluate_classification('A;B;C;D;E;Lut', 'A;B;C;D;E;Lutjanus'),
             'misclassification')
+
+    def test_clean_database_drops_all_na_lineages(self):
+        db_dir = mkdtemp()
+        self.addCleanup(rmtree, db_dir)
+        taxa_fp = join(db_dir, 'ref_taxa.tsv')
+        seqs_fp = join(db_dir, 'ref_seqs.fasta')
+        with open(taxa_fp, 'w') as f:
+            f.write('\n'.join([
+                'Feature ID\tTaxon',
+                'gadus\tEukaryota;Chordata;Actinopteri;Gadiformes;Gadidae;'
+                'Gadus;NA',
+                'allna\tNA;NA;NA;NA;NA;NA;NA',
+                'shallow\tEukaryota;NA;NA;NA;NA;NA;NA',
+                'blank\t',
+            ]))
+        with open(seqs_fp, 'w') as f:
+            f.write('>gadus\nACGT\n>allna\nACGA\n>shallow\nACGC\n'
+                    '>blank\nACGG\n')
+
+        clean_taxa, clean_fasta = clean_database(taxa_fp, seqs_fp, db_dir)
+
+        kept = import_taxonomy_to_dict(clean_taxa)
+        # lineages that place a sequence somewhere survive, even if shallow or
+        # unresolved at the tip
+        self.assertEqual(sorted(kept), ['gadus', 'shallow'])
+        # and the sequences with no usable taxonomy go with them
+        self.assertEqual(sorted(extract_fasta_ids(clean_fasta)),
+                         ['gadus', 'shallow'])
 
     def test_novel_taxa_classification_evaluation(self):
         # test novel taxa evaluation

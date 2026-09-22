@@ -60,6 +60,7 @@ _METRIC_LABELS = {
     "underclassification_ratio": "Underclassification ratio",
     "overclassification_ratio": "Overclassification ratio",
     "misclassification_ratio": "Misclassification ratio",
+    "Bray-Curtis": "Bray-Curtis dissimilarity",
 }
 
 _EVAL_METHOD_LABELS = {
