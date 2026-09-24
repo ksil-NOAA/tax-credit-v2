@@ -46,19 +46,21 @@ If you are **not** using QIIME 2 conda but want a reasonable PyPI stack for part
 pip install -e ".[full-pypi]"
 ```
 
-This does **not** install QIIME 2 (`qiime2`, `q2-types`, plugins). Notebooks and functions that call QIIME 2 APIs will still fail without a proper QIIME environment.
+This does **not** install QIIME 2 (`qiime2`, `q2-types`, plugins). Functions that call QIIME 2 APIs will still fail without a proper QIIME environment.
 
-## Legacy or alternate methods
+## Alternate classify-method environments
 
-Some taxonomy assignment workflows (e.g. QIIME 1-style commands) may require **separate** conda environments. The [taxonomy-assignment-qiime1](../ipynb/mock-community/taxonomy-assignment-qiime1.ipynb) notebook illustrates switching environments for those tools.
+Some classify methods run in their own conda environments rather than the QIIME 2 amplicon one — `bt2-blca` and `revamp` in particular. Tourmaline manages this; see its [install docs](https://github.com/aomlomics/tourmaline/blob/main/docs/install.md).
+
+## Use from Tourmaline
+
+Point `tax_credit_package_dir` in `config_04_tax_credit.yaml` at this clone (default `../tax-credit`), then run the benchmark from the Tourmaline directory:
+
+```bash
+conda activate snakemake-tour2
+./tourmaline.sh --step tax-credit --configfile config_04_tax_credit.yaml --cores 8
+```
 
 ## Jupyter
 
-Install `jupyter` or `notebook` via conda in the QIIME environment (typically already present), then:
-
-```bash
-cd ipynb
-jupyter notebook Index.ipynb
-```
-
-See [notebooks.md](notebooks.md) for an overview of analysis notebooks.
+Only needed for the notebooks in [`examples/`](../examples/). Install `jupyter` or `notebook` via conda in the QIIME environment (typically already present), then run `jupyter notebook` from the repository root.

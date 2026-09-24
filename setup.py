@@ -42,41 +42,39 @@ EXTRAS_FULL_PYPI = [
     "pytest>=8",
 ]
 
-LONG_DESCRIPTION = """# tax-credit
+LONG_DESCRIPTION = """# tax-credit (Tourmaline fork)
 
-Systematic benchmarking of taxonomic classification methods.
+A modified version of [tax-credit](https://github.com/caporaso-lab/tax-credit)
+(TAXonomic ClassifieR Evaluation Tool), adapted to run as the reference-database
+benchmarking step of [Tourmaline 2](https://github.com/aomlomics/tourmaline).
 
-## Recommended install (QIIME 2 amplicon 2024.10 + tax-credit)
+Benchmarks are driven by Tourmaline's `scripts/run_tax_credit.py` from a single
+YAML config; the upstream supplementary notebooks and the modules used only by
+them have been removed. See the repository README for the full list of
+differences from upstream, and please cite the original paper:
 
-1. Create and activate a conda environment from the official **QIIME 2 amplicon**
-   distribution for your platform (Python 3.10). The released dependency snapshot is
-   published here (Linux “latest” example):
+  Bokulich NA, Kaehler BD, Rideout JR, Dillon M, Bolyen E, Knight R,
+  Huttley GA, Caporaso JG. Optimizing taxonomic classification of marker-gene
+  amplicon sequences with QIIME 2's q2-feature-classifier plugin.
+  Microbiome. 2018;6(1):90. doi:10.1186/s40168-018-0470-z
 
-   https://raw.githubusercontent.com/qiime2/distributions/dev/2024.10/amplicon/released/qiime2-amplicon-ubuntu-latest-conda.yml
+## Install (QIIME 2 amplicon 2024.10)
 
-   Platform-specific install files are also linked from the QIIME 2 docs, e.g.:
+```bash
+conda env create -n qiime2-amplicon-2024.10 \
+  --file https://data.qiime2.org/distro/amplicon/qiime2-amplicon-2024.10-py310-osx-conda.yml
+conda activate qiime2-amplicon-2024.10
+pip install -e .
+```
 
-   - https://data.qiime2.org/distro/amplicon/qiime2-amplicon-2024.10-py310-linux-conda.yml
-   - https://data.qiime2.org/distro/amplicon/qiime2-amplicon-2024.10-py310-osx-conda.yml
-   - https://data.qiime2.org/distro/amplicon/qiime2-amplicon-2024.10-py310-osx-arm64-conda.yml
+No additional PyPI packages are required: numpy, pandas, scipy, biom-format,
+scikit-bio, matplotlib, seaborn, statsmodels and pytest all come from the
+QIIME 2 amplicon environment. Without that conda stack, `qiime2` / `q2-*`
+imports will not work; for a non-conda venv you can try
+`pip install -e ".[full-pypi]"` (still no QIIME 2).
 
-   ```bash
-   conda env create -n taxCredit-q2-2024.10 --file https://data.qiime2.org/distro/amplicon/qiime2-amplicon-2024.10-py310-osx-conda.yml
-   conda activate taxCredit-q2-2024.10
-   ```
-
-2. From the `tax-credit` repository root:
-
-   ```bash
-   pip install -e .
-   ```
-
-   **No additional PyPI packages are required:** numpy, pandas, scipy, biom-format,
-   scikit-bio, matplotlib, seaborn, statsmodels, ipython, pytest, Jupyter, etc.
-   come from the QIIME 2 amplicon environment.
-
-**Note:** Without the QIIME 2 conda stack, `qiime2` / `q2-*` imports will not work.
-For a non-conda venv you can try ``pip install -e ".[full-pypi]"`` (still no QIIME 2).
+Clone this repository as a sibling of your Tourmaline directory — Tourmaline's
+`tax_credit_package_dir` config key defaults to `../tax-credit`.
 """
 
 setup(
@@ -89,13 +87,18 @@ setup(
     extras_require={
         "full-pypi": EXTRAS_FULL_PYPI,
     },
-    author="Nicholas Bokulich",
-    author_email="nbokulich@gmail.com",
-    description="Systematic benchmarking of taxonomic classification methods",
+    author="tax-credit development team",
+    description=(
+        "Systematic benchmarking of taxonomic classification methods; "
+        "Tourmaline-integrated fork of caporaso-lab/tax-credit"
+    ),
     long_description=LONG_DESCRIPTION,
     long_description_content_type="text/markdown",
-    url="https://github.com/ksilnoaa/tax-credit",
+    url="https://github.com/ksil-NOAA/tax-credit-v2",
     project_urls={
+        "Upstream tax-credit": "https://github.com/caporaso-lab/tax-credit",
+        "Tourmaline": "https://github.com/aomlomics/tourmaline",
+        "Original paper (please cite)": "https://doi.org/10.1186/s40168-018-0470-z",
         "QIIME 2": "https://docs.qiime2.org/",
         "QIIME 2 install": "https://docs.qiime2.org/2024.10/install/native/#install-qiime-2-within-a-miniconda-or-anaconda-distribution",
         "QIIME 2 amplicon 2024.10 (conda deps)": "https://raw.githubusercontent.com/qiime2/distributions/dev/2024.10/amplicon/released/qiime2-amplicon-ubuntu-latest-conda.yml",

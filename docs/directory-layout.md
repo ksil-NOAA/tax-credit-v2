@@ -1,6 +1,6 @@
 # Directory layout and path helpers
 
-tax-credit assumes **fixed-depth** directory trees for discovering results. Central definitions live in `tax_credit/paths.py` and `tax_credit/simulation_names.py` so notebooks and library code share one contract.
+tax-credit assumes **fixed-depth** directory trees for discovering results. Central definitions live in `tax_credit/paths.py` and `tax_credit/simulation_names.py` so Tourmaline and library code share one contract.
 
 ## Mock-style results (observed)
 

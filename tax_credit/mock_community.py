@@ -11,8 +11,9 @@
 """Mock-community evaluation of taxonomy assignments.
 
 Every function here works on in-memory tables, with no directory layout or
-file-name conventions. It replaces the BIOM-on-disk workflow in
-``mock_evaluation`` / ``eval_framework``, which stays for the legacy notebooks.
+file-name conventions. It replaces the BIOM-on-disk workflow of the upstream
+``mock_evaluation`` / ``eval_framework`` modules, which are not part of this
+Tourmaline-integrated fork.
 
 Inputs
 ------

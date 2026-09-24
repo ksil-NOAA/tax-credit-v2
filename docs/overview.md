@@ -4,7 +4,7 @@ tax-credit supports **systematic benchmarking** of marker-gene taxonomic classif
 
 ## Evaluation modes
 
-The framework stresses three complementary designs (described in more detail in the supplementary notebooks):
+The framework stresses three complementary designs:
 
 ### Mock communities
 
@@ -28,15 +28,17 @@ The legacy alias **`cross-validated`** means **`cross-validated-taxa`**.
 
 ## Data flow (high level)
 
-1. **Simulate or acquire** communities and reference data (see `framework_functions.generate_simulated_datasets`, `simulated_communities`, and notebooks under `ipynb/novel-taxa/` and `ipynb/cross-validated/`).
-2. **Run classifiers** (QIIME 2, BLAST, legacy QIIME 1, etc.) and place outputs under the expected directory depth (see [directory-layout.md](directory-layout.md)).
-3. **Evaluate** with `mock_evaluation.evaluate_results` (mock-style BIOM) or `novel_evaluation.novel_taxa_classification_evaluation` (novel / CV / CV-trad text assignments; set `test_type` accordingly).
-4. **Visualize** with `plotting_functions` and pandas/seaborn in notebooks.
+1. **Simulate or acquire** communities and reference data (see `framework_functions.generate_simulated_datasets`).
+2. **Run classifiers** (QIIME 2 naive-bayes, BLAST, VSEARCH consensus, BLCA, etc.) and place outputs under the expected directory depth (see [directory-layout.md](directory-layout.md)).
+3. **Evaluate** with `mock_community.evaluate_mock_samples` (mock communities) or `novel_evaluation.novel_taxa_classification_evaluation` (novel / CV / CV-trad / self-validated text assignments; set `test_type` accordingly).
+4. **Visualize** with `plotting_functions` and `log_plotting`.
+
+In this fork, Tourmaline's `scripts/run_tax_credit.py` performs all four steps from `config_04_tax_credit.yaml`.
 
 ## BIOM and QIIME 2
 
-Mock-style evaluation is built around **BIOM** tables and observation metadata (taxonomy). Many pipelines produce QIIME 2 artifacts; tax-credit often consumes exported `.biom` files or uses QIIME 2 in **mock community preprocessing** notebooks (demux, DADA2, etc.).
+Mock-community evaluation consumes feature tables (BIOM or TSV), ASV sequences, and expected composition and/or per-ASV taxonomies. Simulated modes consume QIIME 2 artifacts (`.qza`) and exported FASTA/TSV produced by `framework_functions`.
 
 ## Hardware expectations
 
-Moderate laptops can run many steps; large classifier sweeps or millions of reads may need **cluster** resources or long runtimes. See the repository [README](../README.md) for original hardware notes.
+Moderate laptops can run small benchmarks, but a full matrix of databases x methods x parameter sets x folds is hundreds of assignment jobs and generally wants **cluster** resources. Start with a reduced matrix; Tourmaline ships an sbatch wrapper (`scripts/sbatch_tourmaline2_step4.sh`) for SLURM.

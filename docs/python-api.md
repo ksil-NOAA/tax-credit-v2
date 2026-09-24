@@ -1,21 +1,22 @@
 # Python API reference
 
-This page documents the main public entry points after the path / evaluation refactors. Names re-exported from facades (`eval_framework`, `framework_functions`, `process_mocks`) behave the same as the canonical modules listed here.
+This page documents the main public entry points of this Tourmaline-integrated fork. In normal use you do not import these yourself — Tourmaline's `scripts/run_tax_credit.py` calls them for you. They are documented here for extending the framework or for interactive work of the kind shown in [`examples/`](../examples/).
+
+> **Removed in this fork.** The legacy notebook-only modules `eval_framework`, `mock_evaluation`, `biom_cache`, `process_mocks`, `mock_denoise`, `mock_transport`, `mock_quality`, `mockrobiota_extract` and `simulated_communities` are gone. Mock-community scoring now lives in `tax_credit.mock_community`.
 
 **Suggested imports**
 
 ```python
-from tax_credit.mock_evaluation import evaluate_results, compute_mock_results
+from tax_credit import mock_community
 from tax_credit.novel_evaluation import (
     novel_taxa_classification_evaluation,
     extract_per_level_accuracy,
+    select_best_runs,
 )
-from tax_credit.eval_framework import (
-    seek_results,
-    get_expected_tables_lookup,
-    mount_observations,
-    parameter_comparisons,
-    merge_expected_and_observed_tables,
+from tax_credit.framework_functions import (
+    generate_simulated_datasets,
+    recall_simulated_taxa_dirs,
+    parameter_sweep,
 )
 from tax_credit import paths
 from tax_credit import simulation_names
@@ -23,73 +24,22 @@ from tax_credit import simulation_names
 
 ---
 
-## `tax_credit.mock_evaluation`
+## `tax_credit.mock_community`
 
-Orchestrates **mock-style** evaluation: observed BIOM tables vs expected BIOM tables, multiple taxonomic levels, optional per-sequence P/R/F. Uses `eval_framework.mount_observations`, `compute_taxon_accuracy`, and optionally `per_sequence_precision`. Collapsed tables and raw feature tables can be **cached** in-process (see `enable_biom_cache`).
+Mock-community evaluation: observed feature tables and per-ASV assignments versus the expected composition and/or per-ASV "trueish" taxonomies. Replaces the removed `mock_evaluation` / `eval_framework` scoring path and works directly from TSV/BIOM inputs rather than mounted BIOM objects.
 
-### `evaluate_results(...)`
+| Function | Purpose |
+|----------|---------|
+| `read_feature_table(fp)`, `read_composition(fp)`, `read_taxonomy(fp)`, `read_reference_taxonomy(fp)` | Input readers for counts, expected composition, assignments, and reference taxonomy. |
+| `select_mock_samples(counts, composition=None, asv_taxonomy=None, ...)` | Pick the samples scoreable against the expected data available. |
+| `collapse_observed(...)`, `collapse_expected(...)` | Collapse abundance to a taxonomic level for comparison. |
+| `taxon_accuracy_detection(observed, observed_resolved, expected, ...)` | Taxon detection rate, false positives, and resolution-aware variants. |
+| `classification_scores(sample_counts, assignments, asv_taxonomy, level)` | Per-ASV precision / recall / F-measure at one level. |
+| `bray_curtis(observed, expected)` | Composition dissimilarity between observed and expected. |
+| `evaluate_mock_samples(counts, assignments, ranks, eval_ranks, samples, ...)` | Top-level driver returning one row of metrics per sample and level. |
+| `check_backbone(expected_lineages, reference_lineages, ranks, eval_ranks, ...)` | Report expected taxa that the reference database could never recover. |
 
-High-level driver: discovers result tables under `results_dirs`, loads or computes metrics, reads/writes the summary TSV at `results_fp`.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `results_dirs` | `list[str]` | (required) | Roots to search; each tree must contain `dataset/reference/method/params/table.biom` (see `paths`). |
-| `expected_results_dir` | `str` | (required) | Root containing `dataset/reference/expected/` expected BIOMs. |
-| `results_fp` | `str` | (required) | Output (and optional input) path for the **tab-separated** summary table. |
-| `mock_dir` | `str` | (required) | Parent of per-dataset folders; each dataset folder must contain `feature_table.biom` for per-sequence logic. |
-| `taxonomy_level_range` | iterable of int | `range(2, 7)` | 0-based taxonomy depths passed to `mount_observations` (Greengenes-style levels). |
-| `min_count` | `int` | `0` | Minimum count on **observed** tables before collapse (via `mount_observations`). |
-| `taxa_to_keep` | `list` or `None` | `None` | If set, restricts observations during filtering (prefix / metadata rules in `filter_table`). |
-| `md_key` | `str` | `'taxonomy'` | Observation metadata key for taxonomy on observed tables. |
-| `dataset_ids` | `list` or `None` | `None` | Restrict to these dataset IDs. |
-| `reference_ids` | `list` or `None` | `None` | Restrict to these reference IDs. |
-| `method_ids` | `list` or `None` | `None` | Restrict to these method names. |
-| `parameter_ids` | `list` or `None` | `None` | Restrict to these parameter folder names. |
-| `subsample` | `bool` | `False` | If `True`, shuffle and take first `size` result rows (debug / smoke tests). |
-| `filename_pattern` | `str` | `paths.DEFAULT_EXPECTED_TABLE_PATTERN` | `str.format(level)` for expected BIOM filename; default `table.L{0}-taxa.biom` with level from `get_expected_tables_lookup` (`level=6`). |
-| `size` | `int` | `10` | Subsample size when `subsample=True`. |
-| `per_seq_precision` | `bool` | `False` | If `True` and `trueish-taxonomies.tsv` exists beside expected BIOM, compute per-sequence P/R/F. |
-| `exclude` | `list` | `['other']` | Taxonomy labels excluded from **per-sequence** scoring (`compute_prf` with `test_type='mock'`). |
-| `backup` | `bool` | `True` | Before overwrite, copy existing `results_fp` to `results_fp + '.bk'` (when write path is used). |
-| `force` | `bool` | `False` | If `True`, recompute even when `results_fp` exists. |
-| `append` | `bool` | `False` | Merge behavior with existing file; see docstring matrix (`force` × `append` × filters). |
-| `enable_biom_cache` | `bool` | `True` | Reuse mounted BIOMs / feature tables across rows sharing paths. |
-| `biom_cache_max_entries` | `int` or `None` | `None` | Optional LRU cap on cache size for one `compute_mock_results` run. |
-
-**Returns:** `pandas.DataFrame` — same rows as written to `results_fp` (tab-separated, first column index).
-
-**`force` / `append`:** The docstring in source spells out four combinations (overwrite vs load-only vs append new result directories vs filter loaded frame). When `force=False` and the file exists, existing numeric results are not recomputed unless `append` adds missing `(Dataset, Reference, Method, Parameters)` tuples.
-
----
-
-### `compute_mock_results(...)`
-
-Lower-level: given an explicit list of result tuples and an expected-path lookup, returns the metrics `DataFrame` **without** the `evaluate_results` file I/O branches.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `result_tables` | `list[tuple]` | (required) | Each tuple: `(dataset_id, reference_id, method_id, parameter_id, actual_table_fp)`. |
-| `expected_table_lookup` | `dict` | (required) | `lookup[dataset_id][reference_id] -> expected_biom_fp`. |
-| `results_fp` | `str` | (required) | Passed through for API compatibility; **not** used to read/write inside this function. |
-| `mock_dir` | `str` | (required) | Root for `join(mock_dir, dataset_id, FEATURE_TABLE_BIOM)`. |
-| `taxonomy_level_range` | iterable | `range(2, 7)` | Levels to evaluate. |
-| `min_count` | `int` | `0` | Observed-table filtering threshold. |
-| `taxa_to_keep` | `list` or `None` | `None` | Passed to `mount_observations` / `filter_table`. |
-| `md_key` | `str` | `'taxonomy'` | Observed taxonomy metadata key. |
-| `per_seq_precision` | `bool` | `False` | Enable per-sequence branch. |
-| `exclude` | `list` or `None` | `None` | Per-sequence exclude list (defaults handled in caller). |
-| `enable_biom_cache` | `bool` | `True` | Use `BiomTableCache` vs `NO_CACHE`. |
-| `biom_cache_max_entries` | `int` or `None` | `None` | LRU limit. |
-
-**Output columns**
-
-| Column | Meaning |
-|--------|---------|
-| `Dataset`, `Level`, `SampleID`, `Reference`, `Method`, `Parameters` | Keys for the evaluation row. |
-| `Precision`, `Recall`, `F-measure` | From `per_sequence_precision` when enabled and sidecar files exist; else `-1.0`. |
-| `Taxon Accuracy Rate`, `Taxon Detection Rate` | From `compute_taxon_accuracy` (two presence/absence style rates); `-1.0` if `ZeroDivisionError` in that path. |
-
-**Side files for per-sequence metrics:** beside expected BIOM: `trueish-taxonomies.tsv`; beside observed BIOM: `rep_seqs_tax_assignments.txt` or `taxonomy.tsv` (see `paths`).
+Tourmaline's `scripts/tax_credit_mock.py` wraps these for config validation, input staging and summary writing.
 
 ---
 
@@ -135,48 +85,6 @@ For each group and metric, returns the run (method + parameters) with the best m
 
 ---
 
-## `tax_credit.eval_framework`
-
-### Discovery and path processing
-
-| Function | Purpose |
-|----------|---------|
-| `find_and_process_result_tables(start_dir, biom_processor=abspath, filename_pattern=DEFAULT_MOCK_RESULT_TABLE_PATTERN)` | Glob observed tables; returns `(dataset_id, reference_id, method_id, parameter_id, processed_path_or_table)`. |
-| `find_and_process_expected_tables(start_dir, biom_processor=abspath, filename_pattern=..., level=6)` | Glob expected tables at one collapsed level. |
-| `get_expected_tables_lookup(start_dir, biom_processor=abspath, filename_pattern=..., level=6)` | Nested dict `dataset_id -> reference_id -> path` (or processed object). |
-| `seek_results(results_dirs, dataset_ids=None, reference_ids=None, method_ids=None, parameter_ids=None)` | Union of `find_and_process_result_tables` over dirs, then filter. Asserts each `results_dir` exists. |
-
-### Table operations
-
-| Function | Key parameters | Notes |
-|----------|----------------|-------|
-| `mount_observations(table_fp, min_count=0, taxonomy_level=6, taxa_to_keep=None, md_key='taxonomy', normalize=True, clean_obs_ids=True, filter_obs=True)` | Loads BIOM, optional `filter_table`, collapses to `taxonomy_level`, optional `norm`. | Core primitive for mock metrics. |
-| `filter_table(table, min_count=0, taxonomy_level=None, taxa_to_keep=None, md_key='taxonomy')` | Observation filter callback for BIOM. | Used inside `mount_observations` when counts/taxa filters apply. |
-| `compute_taxon_accuracy(actual_table, expected_table, actual_sample_id=None, expected_sample_id=None)` | Sample-wise presence/absence overlap. | Returns two floats `(p, r)`-style rates. |
-| `per_sequence_precision(expected_table_fp, actual_table_fp, feature_table, sample_id, taxonomy_level, exclude=None)` | Per-rep-seq P/R/F for one sample. | Returns `(-1,-1,-1)` if no `trueish-taxonomies.tsv`. |
-
-### Summaries and comparisons
-
-| Function | Key parameters | Returns |
-|----------|----------------|---------|
-| `get_sample_to_top_params(df, metric, sample_col='SampleID', method_col='Method', dataset_col='Dataset', ascending=False)` | Uses mean absolute deviation from max/min to collect “near-best” parameter sets per method. | Wide `DataFrame` indexed by `(Dataset, SampleID)`. |
-| `parameter_comparisons(df, method, metrics=[...], sample_col=..., method_col=..., dataset_col=..., ascending=None)` | Counts how often each parameter set is “top” per metric. | `DataFrame` indexed by parameter id. |
-| `filter_df(df_in, column_name=None, values=None, exclude=False)` | Row filter helper. | Filtered frame. |
-| `method_by_dataset(df, dataset, sort_field, display_fields, group_by='Dataset', test_field='Method')` | First row per method after sort. | Subframe with `display_fields`. |
-| `method_by_dataset_a1` | `functools.partial` of `method_by_dataset` with `sort_field="F-measure"` and fixed display tuple. | Convenience for notebooks. |
-| `method_by_reference_comparison(df, group_by='Reference', dataset='Dataset', level_range=range(4,7), ...)` | Nested loops over dataset / level / reference calling `method_by_dataset`. | Concatenated summary. |
-
-### Merging BIOMs (notebooks)
-
-`merge_expected_and_observed_tables(expected_results_dir, results_dirs, md_key='taxonomy', min_count=0, taxonomy_level=6, taxa_to_keep=None, biom_fp=MERGED_TABLE_BIOM, filename_pattern=DEFAULT_EXPECTED_TABLE_PATTERN, dataset_ids=None, reference_ids=None, method_ids=None, parameter_ids=None, force=False)`
-
-| Parameter | Notes |
-|-----------|--------|
-| `biom_fp` | Output filename under each `dataset/reference/` (default `merged_table.biom`). |
-| `force` | If **`False`**, the function calls **`exit()`** with a message (intended to stop accidental “Run all” merges). Set **`force=True`** to generate or overwrite merged tables. |
-
----
-
 ## `tax_credit.framework_functions` (selected)
 
 Large module: simulation generation, parameter sweeps, PRF utilities, QIIME helpers, runtime benchmarking. Functions below are the ones **novel evaluation** depends on.
@@ -209,7 +117,7 @@ Returns ``(ref_seqs_qza, ref_taxa_qza)`` paths under ``ref_dbs/<reference_id>/``
 
 ### `trad_cv_naive_bayes_commands_single_classifier(trad_sim_data_dir, project_data_dir, results_dir, database_names, iterations, method_parameters_combinations, ...)`
 
-For **cross-validated-trad**, builds two shell-command lists: **fit** naive Bayes once per (database, **fit** parameter combo) into ``results_dir/<db>/<db>/<method>/<fit-params>/classifier.qza``, then **classify** each fold’s ``query.qza`` into ``results_dir/<fold-id>/<fold-id>/<method>/<run-id>/`` (same depth as ``parameter_sweep`` with ``multilevel=False``). Run all fit commands before classify. See ``tax-credit_example.ipynb`` (cross-validated assignment section).
+For **cross-validated-trad**, builds two shell-command lists: **fit** naive Bayes once per (database, **fit** parameter combo) into ``results_dir/<db>/<db>/<method>/<fit-params>/classifier.qza``, then **classify** each fold’s ``query.qza`` into ``results_dir/<fold-id>/<fold-id>/<method>/<run-id>/`` (same depth as ``parameter_sweep`` with ``multilevel=False``). Run all fit commands before classify. See [`examples/cross-validated-and-novel-taxa.ipynb`](../examples/cross-validated-and-novel-taxa.ipynb) (cross-validated assignment section).
 
 **``method_parameters_combinations``:** per method, either a **flat** dict (all keys go to ``fit-classifier-naive-bayes``; classify uses only ``confidence`` and ``classify_n_jobs``), or ``{'fit': {...}, 'classify': {...}}`` where each inner dict maps QIIME flag stems to lists (Cartesian product). Classify flags (e.g. ``p-confidence``, ``p-n-jobs``, ``p-reads-per-batch``) are passed to ``classify-sklearn``; omitted ``p-confidence`` / ``p-n-jobs`` default from the function kwargs. When both sides sweep, result dirs use ``<fit-id>__cls__<classify-id>``.
 
@@ -220,19 +128,6 @@ For **cross-validated-trad**, builds two shell-command lists: **fit** naive Baye
 
 Default behavior generates **all three** simulation types.  
 Backward compatibility: `cross-validated` is treated as an alias of `cross-validated-taxa`.
-
----
-
-## `tax_credit.biom_cache`
-
-Used internally by `compute_mock_results`; exposed for tests or custom tooling.
-
-| Name | Description |
-|------|-------------|
-| `mount_observations_cache_key(table_fp, min_count, taxonomy_level, taxa_to_keep, md_key, filter_obs)` | Stable tuple key including `realpath` of `table_fp`. |
-| `feature_table_cache_key(table_fp)` | Key for raw `load_table` cache. |
-| `BiomTableCache(max_entries=None)` | `get_or_put(key, factory)` with optional LRU eviction. |
-| `NO_CACHE` | `_NoBiomCache` singleton; always runs `factory`. |
 
 ---
 
@@ -250,17 +145,6 @@ Lists directories under *results_root* at that depth that contain the assignment
 - **`simulation_names`:** constants such as `DIR_CROSS_VALIDATED`, `DIR_CROSS_VALIDATED_TRAD`, `DIR_NOVEL_TAXA_SIMULATIONS`, `DIR_REF_DBS`; helpers `cross_validated_root`, `cross_validated_trad_root`, `novel_taxa_simulations_root`, `ref_dbs_root`; `format_*` / `parse_*` for fold IDs (`parse_cv_dataset_id` applies to both CV trees; novel IDs support hyphenated DB names).
 
 See [directory-layout.md](directory-layout.md).
-
----
-
-## Mock community QIIME 2 pipeline (Phase 5)
-
-| Module | Responsibility |
-|--------|----------------|
-| `tax_credit.mockrobiota_extract` | Mockrobiota metadata, downloads, expected TSV → BIOM, `amend_biom_taxonomy_ids`. |
-| `tax_credit.mock_denoise` | Demux, DADA2, feature table export, optional tree. |
-| `tax_credit.mock_transport` | Copy artifacts into repo `data/` layout. |
-| `tax_credit.process_mocks` | Re-exports all public functions from the three modules above (`__all__` in source). |
 
 ---
 
@@ -284,7 +168,7 @@ Evaluation metric plots used by the Tourmaline tax-credit step:
 
 `tax_credit.log_plotting.method_parameter_sensitivity_heatmap_from_data_frame(pivot_df, title=None, value_label=..., annotate_max_cells=120)` draws one heatmap panel per dataset from a `(dataset, expected_taxonomy)`-indexed pivot, keeping its row order; hatched cells have no data. Rank rows first with `log_analysis.select_top_sensitivity_taxa(pivot_df, top_n)`, which keeps the `top_n` worst taxa per dataset.
 
-**API changes (notebooks in `ipynb/` not yet updated):**
+**API changes relative to upstream tax-credit:**
 
 - `show=` removed from every plotting function; figures are returned instead. Call `plt.show()` or display the figure in notebooks.
 - `pointplot_from_data_frame` takes one `metric` (was a `y_vars` list), uses `x` / `hue` / `col` (were `x_axis` / `color_by` / `group_by`) and returns a `Figure` (was a dict of `FacetGrid`s).
@@ -300,4 +184,5 @@ Evaluation metric plots used by the Tourmaline tax-credit step:
 
 - [Overview](overview.md) — scientific modes (mock / CV / novel).
 - [Directory layout](directory-layout.md) — on-disk contracts.
-- [Notebooks](notebooks.md) — typical import patterns in `ipynb/`.
+- [Examples](../examples/) — interactive notebooks using this API.
+- [README](../README.md) — running a benchmark from Tourmaline.
