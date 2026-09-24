@@ -1,4 +1,4 @@
-# tax-credit (Tourmaline fork)
+# tour2-tax-credit (Tourmaline fork)
 
 **A modified version of [tax-credit](https://github.com/caporaso-lab/tax-credit) (TAXonomic ClassifieR Evaluation Tool), adapted to run as the reference-database benchmarking step of [Tourmaline 2](https://github.com/aomlomics/tourmaline).**
 
@@ -6,20 +6,17 @@ This is **not** the upstream tax-credit repository. It is a fork maintained for 
 
 ---
 
-## What this fork is for
+The original tax-credit is a notebook-driven framework: you open a Jupyter notebook per analysis, edit paths and parameter sweeps, and run the cells. This fork keeps the scientific core of that framework — the simulation, evaluation and plotting code — but designed to run through [Tourmaline](https://github.com/aomlomics/tourmaline/tree/V2), which drives everything from a YAML config.
 
-Upstream tax-credit is a notebook-driven framework: you open a Jupyter notebook per analysis, edit paths and parameter sweeps, and run the cells. This fork keeps the scientific core of that framework — the simulation, evaluation and plotting code — but the orchestration has moved into Tourmaline, which drives everything from a single YAML config.
+Tourmaline's `scripts/run_tax_credit.py` imports it and runs the whole benchmark: it builds the simulated datasets, emits and executes the classification jobs, scores the assignments, and writes summary tables and plots.
 
-In practice that means you do not call this package directly. Tourmaline's `scripts/run_tax_credit.py` imports it and runs the whole benchmark: it builds the simulated datasets, emits and executes the classification jobs, scores the assignments, and writes summary tables and plots.
+## How it differs from the original tax-credit
 
-## How it differs from upstream
-
-- **Driven by Tourmaline, not notebooks.** The `ipynb/` tree of supplementary notebooks from the original paper has been removed, along with the precomputed `analyses/` results that backed them.
 - **Trimmed to what Tourmaline uses.** The legacy notebook-only modules (`eval_framework`, `mock_evaluation`, `biom_cache`, `process_mocks`, `mock_denoise`, `mock_transport`, `mock_quality`, `mockrobiota_extract`, `simulated_communities`) have been removed. See [Package layout](#package-layout) for what remains.
-- **New evaluation modes.** Traditional random K-fold cross-validation (`cross-validated-trad`) has been added alongside the original taxonomy-stratified folds, with shared reference artifacts to avoid duplicating a database per fold.
+- **New evaluation modes.** Traditional random K-fold cross-validation (`cross-validated-trad`) and running a full database against itself (`self-validated`) have been added alongside the original taxonomy-stratified folds, with shared reference artifacts to avoid duplicating a database per fold.
 - **New mock-community implementation.** `tax_credit.mock_community` replaces the old `mock_evaluation` / `eval_framework` scoring path, and works from feature tables, ASV sequences and expected composition or per-ASV "trueish" taxonomies.
 - **Log analysis and plot theming.** `tax_credit.log_analysis`, `tax_credit.log_plotting` and `tax_credit.plot_theme` were added to summarize per-taxon classifier behaviour and to give the generated figures a consistent look.
-- **Modernized environment.** Targets QIIME 2 amplicon 2024.10 (Python 3.10). The upstream Travis CI config (Python 3.5) has been removed.
+- **Modernized environment.** Targets QIIME 2 amplicon 2024.10 (Python 3.10). 
 
 ## Installation
 
@@ -30,26 +27,14 @@ conda env create -n qiime2-amplicon-2024.10 \
   --file https://data.qiime2.org/distro/amplicon/qiime2-amplicon-2024.10-py310-osx-conda.yml
 conda activate qiime2-amplicon-2024.10
 
-git clone https://github.com/ksil-NOAA/tax-credit-v2.git tax-credit
-cd tax-credit
+git clone https://github.com/ksil-NOAA/tour2-tax-credit.git tax-credit
+cd tour2-tax-credit
 pip install -e .
 ```
 
-Clone it as a sibling of your Tourmaline directory — Tourmaline's `tax_credit_package_dir` defaults to `../tax-credit`.
+Clone it as a sibling of your Tourmaline directory — Tourmaline's `tax_credit_package_dir` defaults to `../tour2-tax-credit`.
 
 See [docs/installation.md](docs/installation.md) for platform-specific environment files and the non-conda fallback.
-
-## Running a benchmark
-
-Benchmarks are run from Tourmaline, not from this repository:
-
-```bash
-conda activate snakemake-tour2
-cd /path/to/tourmaline
-./tourmaline.sh --step tax-credit --configfile config_04_tax_credit.yaml --cores 8
-```
-
-Set `tax_credit_package_dir` in `config_04_tax_credit.yaml` to point at this clone. Tourmaline's [docs/steps/tax_credit.md](https://github.com/aomlomics/tourmaline/blob/main/docs/steps/tax_credit.md) and `docs/configuration.md` are the reference for every available option.
 
 Five evaluation modes are supported. The first four are simulated from the reference database itself; `mock-community` requires real sequencing data you supply.
 
@@ -96,7 +81,7 @@ The notebooks in [`examples/`](examples/) are reference material, not part of th
 
 ## Citation
 
-This fork is derived from tax-credit, the evaluation framework published with QIIME 2's `q2-feature-classifier`. **If you use this software, please cite the original paper:**
+This fork is derived from tax-credit. **If you use this software, please cite the original paper:**
 
 > Bokulich NA, Kaehler BD, Rideout JR, Dillon M, Bolyen E, Knight R, Huttley GA, Caporaso JG. Optimizing taxonomic classification of marker-gene amplicon sequences with QIIME 2's q2-feature-classifier plugin. *Microbiome*. 2018;6(1):90. doi:[10.1186/s40168-018-0470-z](https://doi.org/10.1186/s40168-018-0470-z)
 
@@ -119,3 +104,6 @@ This fork is derived from tax-credit, the evaluation framework published with QI
 ## License
 
 BSD 3-Clause, unchanged from upstream — see [COPYING.txt](COPYING.txt). Copyright (c) 2014--, tax-credit development team.
+
+## Disclaimer
+This repository is a scientific product and is not official communication of the National Oceanic and Atmospheric Administration, or the United States Department of Commerce. All NOAA GitHub project code is provided on an 'as is' basis and the user assumes responsibility for its use. Any claims against the Department of Commerce or Department of Commerce bureaus stemming from the use of this GitHub project will be governed by all applicable Federal law. Any reference to specific commercial products, processes, or services by service mark, trademark, manufacturer, or otherwise, does not constitute or imply their endorsement, recommendation or favoring by the Department of Commerce. The Department of Commerce seal and logo, or the seal and logo of a DOC bureau, shall not be used in any manner to imply endorsement of any commercial product or activity by DOC or the United States Government.
